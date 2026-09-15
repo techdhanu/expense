@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from database.queries import get_table
+from database.client import get_supabase_client
 
 
 BACKUP_TABLES = [
@@ -208,3 +209,64 @@ def get_backup_history() -> list[dict]:
     )
 
     return response.data or []
+def restore_json_backup(backup_file: str | Path) -> dict:
+    backup_path = Path(backup_file)
+
+    if not backup_path.exists():
+        raise FileNotFoundError(f"Backup file not found: {backup_path}")
+
+    if backup_path.suffix.lower() != ".json":
+        raise ValueError("Only JSON backup files can be restored.")
+
+    try:
+        with backup_path.open("r", encoding="utf-8") as file:
+            backup_data = json.load(file)
+    except json.JSONDecodeError as exc:
+        raise ValueError("The backup file contains invalid JSON.") from exc
+
+    if not isinstance(backup_data, dict):
+        raise ValueError("Invalid backup format.")
+
+    if backup_data.get("backup_version") != BACKUP_VERSION:
+        raise ValueError("Unsupported backup version.")
+
+    tables = backup_data.get("tables")
+
+    if not isinstance(tables, dict):
+        raise ValueError("Backup does not contain valid table data.")
+
+    missing_tables = [
+        table for table in BACKUP_TABLES
+        if table not in tables
+    ]
+
+    if missing_tables:
+        raise ValueError(
+            "Backup is missing tables: " + ", ".join(missing_tables)
+        )
+
+    # Perform the complete restore inside one PostgreSQL transaction.
+    # If any table fails, PostgreSQL rolls back the entire restore.
+    try:
+        response = get_supabase_client().rpc(
+            "restore_expense_tracker_backup",
+            {"backup_data": backup_data},
+        ).execute()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Atomic backup restore failed: {exc}"
+        ) from exc
+
+    if not response.data:
+        raise RuntimeError("Backup restore returned no result.")
+
+    result = response.data
+
+    # Supabase may return the PostgreSQL jsonb result as a dictionary.
+    if isinstance(result, list):
+        result = result[0] if result else {}
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Backup restore returned an invalid result.")
+
+    return result

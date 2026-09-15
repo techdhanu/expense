@@ -541,3 +541,307 @@ CREATE TABLE IF NOT EXISTS app_settings (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- ATOMIC JSON BACKUP RESTORE
+-- ============================================================
+
+create or replace function restore_expense_tracker_backup(backup_data jsonb)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+    table_name text;
+    records jsonb;
+    restored_counts jsonb := '{}'::jsonb;
+    record_count integer;
+begin
+    -- Validate top-level structure
+    if backup_data->>'backup_version' is null then
+        raise exception 'Backup version is missing.';
+    end if;
+
+    if backup_data->'tables' is null
+       or jsonb_typeof(backup_data->'tables') <> 'object' then
+        raise exception 'Backup does not contain valid table data.';
+    end if;
+
+    -- Restore in foreign-key-safe order.
+    -- PostgreSQL automatically rolls back the entire function
+    -- if any statement raises an exception.
+
+    -- app_users
+    records := backup_data->'tables'->'app_users';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into app_users
+        select *
+        from jsonb_populate_recordset(null::app_users, records)
+        on conflict (id) do update set
+            email = excluded.email,
+            password_hash = excluded.password_hash,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('app_users', record_count);
+
+    -- accounts
+    records := backup_data->'tables'->'accounts';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into accounts
+        select *
+        from jsonb_populate_recordset(null::accounts, records)
+        on conflict (id) do update set
+            name = excluded.name,
+            account_type = excluded.account_type,
+            opening_balance = excluded.opening_balance,
+            is_active = excluded.is_active,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('accounts', record_count);
+
+    -- categories
+    records := backup_data->'tables'->'categories';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into categories
+        select *
+        from jsonb_populate_recordset(null::categories, records)
+        on conflict (id) do update set
+            name = excluded.name,
+            category_type = excluded.category_type,
+            is_active = excluded.is_active,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('categories', record_count);
+
+    -- people
+    records := backup_data->'tables'->'people';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into people
+        select *
+        from jsonb_populate_recordset(null::people, records)
+        on conflict (id) do update set
+            name = excluded.name,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('people', record_count);
+
+    -- transactions
+    records := backup_data->'tables'->'transactions';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into transactions
+        select *
+        from jsonb_populate_recordset(null::transactions, records)
+        on conflict (id) do update set
+            transaction_date = excluded.transaction_date,
+            transaction_type = excluded.transaction_type,
+            amount = excluded.amount,
+            source_account_id = excluded.source_account_id,
+            destination_account_id = excluded.destination_account_id,
+            category_id = excluded.category_id,
+            person_id = excluded.person_id,
+            payment_method = excluded.payment_method,
+            description = excluded.description,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('transactions', record_count);
+
+    -- transfers
+    records := backup_data->'tables'->'transfers';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into transfers
+        select *
+        from jsonb_populate_recordset(null::transfers, records)
+        on conflict (id) do update set
+            transaction_id = excluded.transaction_id,
+            from_account_id = excluded.from_account_id,
+            to_account_id = excluded.to_account_id,
+            amount = excluded.amount,
+            transfer_date = excluded.transfer_date,
+            description = excluded.description,
+            notes = excluded.notes;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('transfers', record_count);
+
+    -- friends_money
+    records := backup_data->'tables'->'friends_money';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into friends_money
+        select *
+        from jsonb_populate_recordset(null::friends_money, records)
+        on conflict (id) do update set
+            person_id = excluded.person_id,
+            transaction_id = excluded.transaction_id,
+            account_id = excluded.account_id,
+            amount_received = excluded.amount_received,
+            amount_returned = excluded.amount_returned,
+            received_date = excluded.received_date,
+            expected_return_date = excluded.expected_return_date,
+            status = excluded.status,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('friends_money', record_count);
+
+    -- budgets
+    records := backup_data->'tables'->'budgets';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into budgets
+        select *
+        from jsonb_populate_recordset(null::budgets, records)
+        on conflict (id) do update set
+            category_id = excluded.category_id,
+            amount = excluded.amount,
+            month = excluded.month,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('budgets', record_count);
+
+    -- savings_goals
+    records := backup_data->'tables'->'savings_goals';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into savings_goals
+        select *
+        from jsonb_populate_recordset(null::savings_goals, records)
+        on conflict (id) do update set
+            name = excluded.name,
+            target_amount = excluded.target_amount,
+            target_date = excluded.target_date,
+            status = excluded.status,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('savings_goals', record_count);
+
+    -- savings_contributions
+    records := backup_data->'tables'->'savings_contributions';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into savings_contributions
+        select *
+        from jsonb_populate_recordset(null::savings_contributions, records)
+        on conflict (id) do update set
+            savings_goal_id = excluded.savings_goal_id,
+            transaction_id = excluded.transaction_id,
+            account_id = excluded.account_id,
+            amount = excluded.amount,
+            contribution_date = excluded.contribution_date,
+            notes = excluded.notes;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('savings_contributions', record_count);
+
+    -- recurring_transactions
+    records := backup_data->'tables'->'recurring_transactions';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into recurring_transactions
+        select *
+        from jsonb_populate_recordset(null::recurring_transactions, records)
+        on conflict (id) do update set
+            name = excluded.name,
+            transaction_type = excluded.transaction_type,
+            amount = excluded.amount,
+            account_id = excluded.account_id,
+            destination_account_id = excluded.destination_account_id,
+            category_id = excluded.category_id,
+            payment_method = excluded.payment_method,
+            frequency = excluded.frequency,
+            start_date = excluded.start_date,
+            next_due_date = excluded.next_due_date,
+            auto_create = excluded.auto_create,
+            is_active = excluded.is_active,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('recurring_transactions', record_count);
+
+    -- backup_history
+    records := backup_data->'tables'->'backup_history';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into backup_history
+        select *
+        from jsonb_populate_recordset(null::backup_history, records)
+        on conflict (id) do update set
+            backup_type = excluded.backup_type,
+            filename = excluded.filename,
+            record_count = excluded.record_count,
+            created_at = excluded.created_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('backup_history', record_count);
+
+    -- app_settings
+    records := backup_data->'tables'->'app_settings';
+    if records is not null and jsonb_array_length(records) > 0 then
+        insert into app_settings
+        select *
+        from jsonb_populate_recordset(null::app_settings, records)
+        on conflict (id) do update set
+            setting_key = excluded.setting_key,
+            setting_value = excluded.setting_value,
+            updated_at = excluded.updated_at;
+
+        get diagnostics record_count = row_count;
+    else
+        record_count := 0;
+    end if;
+    restored_counts := restored_counts || jsonb_build_object('app_settings', record_count);
+
+    return jsonb_build_object(
+        'backup_version', backup_data->>'backup_version',
+        'restored_counts', restored_counts,
+        'total_records',
+        (
+            select sum((value)::integer)
+            from jsonb_each_text(restored_counts)
+        )
+    );
+end;
+$$;

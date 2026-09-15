@@ -2,9 +2,11 @@ import streamlit as st
 from supabase import create_client
 
 
+@st.cache_resource
 def get_supabase_client():
     """
-    Create and return the Supabase client using Streamlit secrets.
+    Create and return one cached Supabase client
+    using Streamlit secrets.
     """
 
     try:
