@@ -8,7 +8,7 @@ from components.navigation import (
     show_app_header,
 )
 
-from database.queries import get_table
+from services.category_service import get_all_categories
 
 from services.account_service import (
     get_all_accounts,
@@ -91,15 +91,7 @@ account_names = list(account_map.keys())
 
 try:
 
-    category_response = (
-        get_table("categories")
-        .select("*")
-        .eq("is_active", True)
-        .order("name")
-        .execute()
-    )
-
-    categories = category_response.data or []
+    categories = get_all_categories()
 
 except Exception as exc:
 
@@ -108,8 +100,6 @@ except Exception as exc:
     )
 
     categories = []
-
-
 # =========================================================
 # LOAD PAYMENT METHODS
 # =========================================================

@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from database.queries import get_table
+from services.authentication_service import get_current_user_id
 from utils.calculations import calculate_total_balance
 from utils.constants import DEFAULT_ACCOUNTS
 from utils.validators import validate_amount
@@ -44,12 +45,16 @@ def _validate_account_id(account_id: str) -> str:
     """
 
     if not isinstance(account_id, str):
-        raise ValueError("Account ID is required.")
+        raise ValueError(
+            "Account ID is required."
+        )
 
     account_id = account_id.strip()
 
     if not account_id:
-        raise ValueError("Account ID is required.")
+        raise ValueError(
+            "Account ID is required."
+        )
 
     return account_id
 
@@ -60,7 +65,9 @@ def _validate_account_type(account_type: str) -> str:
     """
 
     if not isinstance(account_type, str):
-        raise ValueError("Account type is required.")
+        raise ValueError(
+            "Account type is required."
+        )
 
     account_type = account_type.strip().lower()
 
@@ -79,12 +86,16 @@ def _validate_account_name(name: str) -> str:
     """
 
     if not isinstance(name, str):
-        raise ValueError("Account name is required.")
+        raise ValueError(
+            "Account name is required."
+        )
 
     name = name.strip()
 
     if not name:
-        raise ValueError("Account name is required.")
+        raise ValueError(
+            "Account name is required."
+        )
 
     return name
 
@@ -95,15 +106,18 @@ def _validate_account_name(name: str) -> str:
 
 def get_all_accounts() -> list[dict]:
     """
-    Return all active accounts.
+    Return all active accounts belonging to the
+    currently authenticated user.
 
-    Inactive accounts are intentionally excluded from
-    normal account selection.
+    This is the primary account read operation.
     """
+
+    user_id = get_current_user_id()
 
     response = (
         get_table("accounts")
         .select("*")
+        .eq("user_id", user_id)
         .eq("is_active", True)
         .order("name")
         .execute()
@@ -116,20 +130,31 @@ def get_all_accounts() -> list[dict]:
 # GET SINGLE ACCOUNT
 # =========================================================
 
-def get_account(account_id: str) -> dict | None:
+def get_account(
+    account_id: str,
+) -> dict | None:
     """
-    Return a single account by ID.
+    Return a single account belonging to the
+    currently authenticated user.
 
-    This includes inactive accounts so that historical
+    Inactive accounts are included so historical
     transactions can still reference them safely.
+
+    An account belonging to another user is treated
+    as not found.
     """
 
-    account_id = _validate_account_id(account_id)
+    user_id = get_current_user_id()
+
+    account_id = _validate_account_id(
+        account_id
+    )
 
     response = (
         get_table("accounts")
         .select("*")
         .eq("id", account_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -150,15 +175,25 @@ def create_account(
     opening_balance=ZERO,
 ) -> dict:
     """
-    Create a new active account.
+    Create a new active account for the
+    currently authenticated user.
 
     Opening balance cannot be negative.
     """
 
-    name = _validate_account_name(name)
-    account_type = _validate_account_type(account_type)
+    user_id = get_current_user_id()
 
-    opening_balance = _to_decimal(opening_balance)
+    name = _validate_account_name(
+        name
+    )
+
+    account_type = _validate_account_type(
+        account_type
+    )
+
+    opening_balance = _to_decimal(
+        opening_balance
+    )
 
     if opening_balance < ZERO:
         raise ValueError(
@@ -175,10 +210,13 @@ def create_account(
     # -----------------------------------------------------
     # CHECK DUPLICATE ACCOUNT NAME
     # -----------------------------------------------------
+    # Duplicate checking is now scoped to the
+    # currently authenticated user.
 
     existing = (
         get_table("accounts")
         .select("id")
+        .eq("user_id", user_id)
         .eq("name", name)
         .limit(1)
         .execute()
@@ -197,9 +235,12 @@ def create_account(
         get_table("accounts")
         .insert(
             {
+                "user_id": user_id,
                 "name": name,
                 "account_type": account_type,
-                "opening_balance": str(opening_balance),
+                "opening_balance": str(
+                    opening_balance
+                ),
                 "is_active": True,
             }
         )
@@ -220,12 +261,16 @@ def create_account(
 
 def ensure_default_accounts() -> list[dict]:
     """
-    Ensure the required default accounts exist.
+    Ensure the required default accounts exist
+    for the currently authenticated user.
 
-    Existing accounts are preserved.
-    Missing accounts are created with ₹0 opening balance.
+    Existing user accounts are preserved.
+
+    Missing default accounts are created with
+    ₹0 opening balance.
     """
 
+    # get_all_accounts() is already user-scoped.
     existing_accounts = get_all_accounts()
 
     existing_names = {
@@ -240,7 +285,9 @@ def ensure_default_accounts() -> list[dict]:
 
             create_account(
                 name=default_account["name"],
-                account_type=default_account["account_type"],
+                account_type=default_account[
+                    "account_type"
+                ],
                 opening_balance=ZERO,
             )
 
@@ -255,8 +302,9 @@ def get_total_opening_balance(
     accounts: list[dict] | None = None,
 ) -> Decimal:
     """
-    Return the combined opening balance of the supplied
-    accounts or all active accounts.
+    Return the combined opening balance of the
+    supplied accounts or all active accounts
+    belonging to the current user.
     """
 
     accounts = (
@@ -284,21 +332,34 @@ def deactivate_account(
     account_id: str,
 ) -> None:
     """
-    Deactivate an account instead of physically deleting it.
+    Deactivate an account instead of physically
+    deleting it.
 
     Historical transaction records remain intact.
+
+    Only the currently authenticated user's account
+    can be deactivated.
     """
 
-    account_id = _validate_account_id(account_id)
+    user_id = get_current_user_id()
 
-    account = get_account(account_id)
+    account_id = _validate_account_id(
+        account_id
+    )
+
+    account = get_account(
+        account_id
+    )
 
     if account is None:
         raise ValueError(
             "Account not found."
         )
 
-    if not account.get("is_active", False):
+    if not account.get(
+        "is_active",
+        False,
+    ):
         raise ValueError(
             "Account is already inactive."
         )
@@ -311,6 +372,7 @@ def deactivate_account(
             }
         )
         .eq("id", account_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
@@ -330,6 +392,10 @@ def get_account_balance(
     """
     Calculate the current balance for one account.
 
+    IMPORTANT:
+    Only transactions belonging to the currently
+    authenticated user are included.
+
     Balance rules:
 
     Income
@@ -344,6 +410,12 @@ def get_account_balance(
     Friend money returned
         decreases balance.
 
+    Money lent
+        decreases balance.
+
+    Money lent returned
+        increases balance.
+
     Internal transfer
         decreases source account
         increases destination account.
@@ -351,24 +423,32 @@ def get_account_balance(
     Savings contribution
         decreases source account.
 
-    Money lent
-        decreases source account.
-
-    Money lent returned
-        increases source account.
-
     Balance adjustment
         applies the adjustment amount.
     """
 
-    account_id = _validate_account_id(account_id)
+    user_id = get_current_user_id()
 
-    account = get_account(account_id)
+    account_id = _validate_account_id(
+        account_id
+    )
+
+    # -----------------------------------------------------
+    # VERIFY ACCOUNT OWNERSHIP
+    # -----------------------------------------------------
+
+    account = get_account(
+        account_id
+    )
 
     if account is None:
         raise ValueError(
             "Account not found."
         )
+
+    # -----------------------------------------------------
+    # OPENING BALANCE
+    # -----------------------------------------------------
 
     balance = _to_decimal(
         account.get(
@@ -377,6 +457,10 @@ def get_account_balance(
         )
     )
 
+    # -----------------------------------------------------
+    # GET USER-OWNED TRANSACTIONS ONLY
+    # -----------------------------------------------------
+
     response = (
         get_table("transactions")
         .select(
@@ -384,12 +468,17 @@ def get_account_balance(
             "source_account_id, "
             "destination_account_id"
         )
+        .eq("user_id", user_id)
         .or_(
             f"source_account_id.eq.{account_id},"
             f"destination_account_id.eq.{account_id}"
         )
         .execute()
     )
+
+    # -----------------------------------------------------
+    # APPLY TRANSACTION EFFECTS
+    # -----------------------------------------------------
 
     for transaction in response.data or []:
 
@@ -452,6 +541,24 @@ def get_account_balance(
                 balance -= amount
 
         # -------------------------------------------------
+        # MONEY LENT
+        # -------------------------------------------------
+
+        elif transaction_type == "friend_money_lent":
+
+            if source_id == account_id:
+                balance -= amount
+
+        # -------------------------------------------------
+        # MONEY LENT RETURNED
+        # -------------------------------------------------
+
+        elif transaction_type == "friend_money_lent_returned":
+
+            if source_id == account_id:
+                balance += amount
+
+        # -------------------------------------------------
         # INTERNAL TRANSFER
         # -------------------------------------------------
 
@@ -481,24 +588,6 @@ def get_account_balance(
             if source_id == account_id:
                 balance -= amount
 
-        # -------------------------------------------------
-        # MONEY LENT
-        # -------------------------------------------------
-
-        elif transaction_type == "friend_money_lent":
-
-            if source_id == account_id:
-                balance -= amount
-
-        # -------------------------------------------------
-        # MONEY LENT RETURNED
-        # -------------------------------------------------
-
-        elif transaction_type == "friend_money_lent_returned":
-
-            if source_id == account_id:
-                balance += amount
-
     return balance.quantize(
         Decimal("0.01")
     )
@@ -510,8 +599,8 @@ def get_account_balance(
 
 def get_all_account_balances() -> list[dict]:
     """
-    Return all active accounts with their calculated
-    current balances.
+    Return all active accounts belonging to the
+    current user with their calculated balances.
     """
 
     accounts = get_all_accounts()
@@ -540,11 +629,12 @@ def get_all_account_balances() -> list[dict]:
 
 def get_total_current_balance() -> Decimal:
     """
-    Return the combined current balance across all
-    active accounts.
+    Return the combined current balance across
+    all active accounts belonging to the
+    currently authenticated user.
 
-    Internal transfers cancel each other when all
-    accounts are considered together.
+    Internal transfers cancel each other when
+    all user accounts are considered together.
     """
 
     balances = get_all_account_balances()

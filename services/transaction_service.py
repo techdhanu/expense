@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from database.queries import get_table
+from services.authentication_service import get_current_user_id
 from utils.constants import TRANSACTION_TYPES
 from utils.validators import validate_amount
 
@@ -33,18 +34,114 @@ def _validate_transaction_date(transaction_date) -> date:
     return transaction_date
 
 
+def _get_owned_account(
+    account_id: str,
+    require_active: bool = True,
+) -> dict:
+    """
+    Return an account belonging to the currently logged-in user.
+
+    This prevents one user from referencing another user's
+    account UUID.
+    """
+    if not account_id:
+        raise ValueError("Account ID is required.")
+
+    user_id = get_current_user_id()
+
+    query = (
+        get_table("accounts")
+        .select("*")
+        .eq("id", account_id)
+        .eq("user_id", user_id)
+    )
+
+    if require_active:
+        query = query.eq("is_active", True)
+
+    response = query.limit(1).execute()
+
+    if not response.data:
+        raise ValueError(
+            "Account not found or does not belong to the current user."
+        )
+
+    return response.data[0]
+
+
+def _validate_owned_category(
+    category_id: str | None,
+) -> None:
+    """
+    Validate that a category belongs to the current user.
+
+    None is allowed because category is optional for some
+    transaction types.
+    """
+    if not category_id:
+        return
+
+    user_id = get_current_user_id()
+
+    response = (
+        get_table("categories")
+        .select("id")
+        .eq("id", category_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise ValueError(
+            "Category not found or does not belong to the current user."
+        )
+
+
+def _validate_owned_person(
+    person_id: str | None,
+) -> None:
+    """
+    Validate that a person belongs to the current user.
+
+    None is allowed for transaction types that do not use
+    a person.
+    """
+    if not person_id:
+        return
+
+    user_id = get_current_user_id()
+
+    response = (
+        get_table("people")
+        .select("id")
+        .eq("id", person_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise ValueError(
+            "Person not found or does not belong to the current user."
+        )
+
+
 # =========================================================
 # TRANSACTION READ OPERATIONS
 # =========================================================
 
 def get_all_transactions() -> list[dict]:
     """
-    Return all transactions, newest first.
+    Return all transactions belonging to the current user,
+    newest first.
     """
+    user_id = get_current_user_id()
 
     response = (
         get_table("transactions")
         .select("*")
+        .eq("user_id", user_id)
         .order("transaction_date", desc=True)
         .order("created_at", desc=True)
         .execute()
@@ -57,16 +154,21 @@ def get_transaction(
     transaction_id: str,
 ) -> dict | None:
     """
-    Return one transaction by ID.
-    """
+    Return one transaction belonging to the current user.
 
+    A transaction belonging to another user is intentionally
+    returned as not found.
+    """
     if not transaction_id:
         raise ValueError("Transaction ID is required.")
+
+    user_id = get_current_user_id()
 
     response = (
         get_table("transactions")
         .select("*")
         .eq("id", transaction_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -82,17 +184,20 @@ def get_transactions_by_date_range(
     end_date: date,
 ) -> list[dict]:
     """
-    Return transactions within an inclusive date range.
+    Return current-user transactions within an inclusive
+    date range.
     """
-
     if start_date > end_date:
         raise ValueError(
             "Start date cannot be after end date."
         )
 
+    user_id = get_current_user_id()
+
     response = (
         get_table("transactions")
         .select("*")
+        .eq("user_id", user_id)
         .gte(
             "transaction_date",
             start_date.isoformat(),
@@ -118,19 +223,22 @@ def get_filtered_transactions(
     person_ids: list[str] | None = None,
 ) -> list[dict]:
     """
-    Return transactions matching the supplied filters.
+    Return current-user transactions matching the supplied
+    filters.
 
     Filtering is performed at the database level.
     """
-
     if start_date > end_date:
         raise ValueError(
             "Start date cannot be after end date."
         )
 
+    user_id = get_current_user_id()
+
     query = (
         get_table("transactions")
         .select("*")
+        .eq("user_id", user_id)
         .gte(
             "transaction_date",
             start_date.isoformat(),
@@ -145,7 +253,6 @@ def get_filtered_transactions(
     # Transaction type filter
     # -----------------------------------------------------
     if transaction_types:
-
         invalid_types = (
             set(transaction_types)
             - set(TRANSACTION_TYPES)
@@ -166,6 +273,9 @@ def get_filtered_transactions(
     # Category filter
     # -----------------------------------------------------
     if category_ids:
+        for category_id in category_ids:
+            _validate_owned_category(category_id)
+
         query = query.in_(
             "category_id",
             category_ids,
@@ -175,6 +285,9 @@ def get_filtered_transactions(
     # Person filter
     # -----------------------------------------------------
     if person_ids:
+        for person_id in person_ids:
+            _validate_owned_person(person_id)
+
         query = query.in_(
             "person_id",
             person_ids,
@@ -183,15 +296,18 @@ def get_filtered_transactions(
     # -----------------------------------------------------
     # Account filter
     #
-    # An account may appear as either source or
-    # destination, which is important for transfers.
+    # An account may appear as either source or destination.
     # -----------------------------------------------------
     if account_ids:
+        for account_id in account_ids:
+            _get_owned_account(
+                account_id,
+                require_active=False,
+            )
 
         account_conditions = []
 
         for account_id in account_ids:
-
             account_conditions.append(
                 f"source_account_id.eq.{account_id}"
             )
@@ -234,11 +350,13 @@ def create_transaction(
     notes: str | None = None,
 ) -> dict:
     """
-    Create a standard transaction.
+    Create a standard transaction for the current user.
 
-    Performs application-level validation before inserting
-    into PostgreSQL.
+    All referenced accounts, categories and people are
+    ownership-validated before insertion.
     """
+
+    user_id = get_current_user_id()
 
     # -----------------------------------------------------
     # Transaction type
@@ -272,9 +390,30 @@ def create_transaction(
             "Source and destination accounts must be different."
         )
 
+    # Validate source account ownership.
+    if source_account_id:
+        _get_owned_account(
+            source_account_id,
+            require_active=True,
+        )
+
+    # Validate destination account ownership.
+    if destination_account_id:
+        _get_owned_account(
+            destination_account_id,
+            require_active=True,
+        )
+
+    # -----------------------------------------------------
+    # Category / person ownership
+    # -----------------------------------------------------
+    _validate_owned_category(category_id)
+    _validate_owned_person(person_id)
+
     # -----------------------------------------------------
     # Type-specific validation
     # -----------------------------------------------------
+
     if transaction_type == "income":
 
         if not source_account_id:
@@ -330,6 +469,30 @@ def create_transaction(
                 "Friend money returned requires a person."
             )
 
+    elif transaction_type == "friend_money_lent":
+
+        if not source_account_id:
+            raise ValueError(
+                "Money lent requires an account."
+            )
+
+        if not person_id:
+            raise ValueError(
+                "Money lent requires a person."
+            )
+
+    elif transaction_type == "friend_money_lent_returned":
+
+        if not source_account_id:
+            raise ValueError(
+                "Money lent returned requires an account."
+            )
+
+        if not person_id:
+            raise ValueError(
+                "Money lent returned requires a person."
+            )
+
     elif transaction_type == "balance_adjustment":
 
         if not source_account_id:
@@ -348,13 +511,14 @@ def create_transaction(
     # Build transaction payload
     # -----------------------------------------------------
     transaction_data = {
+        "user_id": user_id,
         "transaction_date": transaction_date.isoformat(),
         "transaction_type": transaction_type,
         "amount": str(amount),
         "source_account_id": source_account_id,
         "destination_account_id": destination_account_id,
         "category_id": category_id,
-        "payment_method": payment_method,
+        "payment_method": _clean_text(payment_method),
         "person_id": person_id,
         "description": _clean_text(description),
         "notes": _clean_text(notes),
@@ -438,9 +602,11 @@ def create_transfer(
     """
     Create an internal transfer.
 
-    Transfers move money between accounts and are not
-    treated as income or expenses.
+    Transfers move money between accounts and are not treated
+    as income or expenses.
     """
+
+    user_id = get_current_user_id()
 
     if not from_account_id:
         raise ValueError(
@@ -457,6 +623,19 @@ def create_transfer(
             "Source and destination accounts must be different."
         )
 
+    # -----------------------------------------------------
+    # Critical ownership validation
+    # -----------------------------------------------------
+    _get_owned_account(
+        from_account_id,
+        require_active=True,
+    )
+
+    _get_owned_account(
+        to_account_id,
+        require_active=True,
+    )
+
     validated_amount = validate_amount(amount)
 
     transaction = create_transaction(
@@ -470,6 +649,7 @@ def create_transfer(
     )
 
     transfer_data = {
+        "user_id": user_id,
         "transaction_id": transaction["id"],
         "from_account_id": from_account_id,
         "to_account_id": to_account_id,
@@ -501,13 +681,14 @@ def update_transaction(
     updates: dict,
 ) -> dict:
     """
-    Safely update an existing transaction.
+    Safely update an existing transaction belonging to the
+    current user.
 
     Generic updates are intentionally restricted.
 
-    Linked transaction types such as friend-money and
-    savings contributions must be updated through their
-    dedicated services so that related records remain
+    Linked transaction types such as friend-money, savings
+    contributions and Money Lent must be updated through
+    their dedicated services so related records remain
     financially consistent.
     """
 
@@ -520,6 +701,8 @@ def update_transaction(
         raise ValueError(
             "No changes were provided."
         )
+
+    user_id = get_current_user_id()
 
     # -----------------------------------------------------
     # Get existing transaction
@@ -544,6 +727,8 @@ def update_transaction(
         "friend_money_received",
         "friend_money_returned",
         "savings_goal_contribution",
+        "friend_money_lent",
+        "friend_money_lent_returned",
     }
 
     if existing_type in protected_types:
@@ -614,19 +799,25 @@ def update_transaction(
             updates["notes"]
         )
 
-    # -----------------------------------------------------
-    # Optional fields
-    # -----------------------------------------------------
-    if "category_id" in updates:
-        clean_updates["category_id"] = (
-            updates["category_id"]
-        )
-
     if "payment_method" in updates:
-        clean_updates["payment_method"] = (
+        clean_updates["payment_method"] = _clean_text(
             updates["payment_method"]
         )
 
+    # -----------------------------------------------------
+    # Category
+    # -----------------------------------------------------
+    if "category_id" in updates:
+
+        category_id = updates["category_id"]
+
+        _validate_owned_category(category_id)
+
+        clean_updates["category_id"] = category_id
+
+    # -----------------------------------------------------
+    # Ensure there is something to update
+    # -----------------------------------------------------
     if not clean_updates:
         raise ValueError(
             "No valid changes were provided."
@@ -639,6 +830,7 @@ def update_transaction(
         get_table("transactions")
         .update(clean_updates)
         .eq("id", transaction_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
@@ -680,6 +872,10 @@ def update_transaction(
                     "transaction_id",
                     transaction_id,
                 )
+                .eq(
+                    "user_id",
+                    user_id,
+                )
                 .execute()
             )
 
@@ -694,14 +890,13 @@ def delete_transaction(
     transaction_id: str,
 ) -> None:
     """
-    Safely delete a transaction.
+    Safely delete a transaction belonging to the current user.
 
     Transfer child records are removed before the main
     transaction because of the foreign-key relationship.
 
-    Friend-money and savings-linked transactions are
-    intentionally protected by the database/service layer
-    and must be deleted through their dedicated workflows.
+    Friend-money, savings-linked and Money Lent transactions
+    are intentionally protected.
     """
 
     if not transaction_id:
@@ -709,6 +904,11 @@ def delete_transaction(
             "Transaction ID is required."
         )
 
+    user_id = get_current_user_id()
+
+    # -----------------------------------------------------
+    # Get current user's transaction
+    # -----------------------------------------------------
     transaction = get_transaction(
         transaction_id
     )
@@ -729,6 +929,8 @@ def delete_transaction(
         "friend_money_received",
         "friend_money_returned",
         "savings_goal_contribution",
+        "friend_money_lent",
+        "friend_money_lent_returned",
     }
 
     if transaction_type in protected_types:
@@ -750,6 +952,10 @@ def delete_transaction(
                 "transaction_id",
                 transaction_id,
             )
+            .eq(
+                "user_id",
+                user_id,
+            )
             .limit(1)
             .execute()
         )
@@ -763,6 +969,10 @@ def delete_transaction(
                     "transaction_id",
                     transaction_id,
                 )
+                .eq(
+                    "user_id",
+                    user_id,
+                )
                 .execute()
             )
 
@@ -773,6 +983,7 @@ def delete_transaction(
         get_table("transactions")
         .delete()
         .eq("id", transaction_id)
+        .eq("user_id", user_id)
         .execute()
     )
 

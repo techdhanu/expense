@@ -2,13 +2,71 @@ from datetime import date
 from decimal import Decimal
 
 from database.queries import get_table
+from services.authentication_service import get_current_user_id
 from services.transaction_service import create_transaction
 from utils.validators import validate_amount
 
 
+# ============================================================
+# INTERNAL HELPERS
+# ============================================================
+
 def _decimal(value) -> Decimal:
     """Convert a value safely to Decimal."""
     return Decimal(str(value or "0.00"))
+
+
+def _get_owned_person(person_id: str) -> dict:
+    """
+    Return a person belonging to the currently logged-in user.
+    """
+    if not person_id:
+        raise ValueError("Person ID is required.")
+
+    user_id = get_current_user_id()
+
+    response = (
+        get_table("people")
+        .select("*")
+        .eq("id", person_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise ValueError(
+            "Person not found or does not belong to the current user."
+        )
+
+    return response.data[0]
+
+
+def _validate_owned_account(account_id: str) -> dict:
+    """
+    Return an active account belonging to the current user.
+    """
+    if not account_id:
+        raise ValueError("Account ID is required.")
+
+    user_id = get_current_user_id()
+
+    response = (
+        get_table("accounts")
+        .select("*")
+        .eq("id", account_id)
+        .eq("user_id", user_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+
+    if not response.data:
+        raise ValueError(
+            "Account not found or does not belong to the current user."
+        )
+
+    return response.data[0]
 
 
 # ============================================================
@@ -16,10 +74,14 @@ def _decimal(value) -> Decimal:
 # ============================================================
 
 def get_all_people() -> list[dict]:
-    """Return all people."""
+    """Return all people belonging to the current user."""
+
+    user_id = get_current_user_id()
+
     response = (
         get_table("people")
         .select("*")
+        .eq("user_id", user_id)
         .order("name")
         .execute()
     )
@@ -28,11 +90,20 @@ def get_all_people() -> list[dict]:
 
 
 def get_person(person_id: str) -> dict | None:
-    """Return one person."""
+    """
+    Return one person belonging to the current user.
+    """
+
+    if not person_id:
+        raise ValueError("Person ID is required.")
+
+    user_id = get_current_user_id()
+
     response = (
         get_table("people")
         .select("*")
         .eq("id", person_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -47,16 +118,25 @@ def create_person(
     name: str,
     notes: str | None = None,
 ) -> dict:
-    """Create a person."""
+    """Create a person for the current user."""
+
+    user_id = get_current_user_id()
+
+    if not name:
+        raise ValueError("Person name is required.")
 
     name = name.strip()
 
     if not name:
         raise ValueError("Person name is required.")
 
+    # --------------------------------------------------------
+    # Duplicate check is user-scoped
+    # --------------------------------------------------------
     existing = (
         get_table("people")
         .select("id")
+        .eq("user_id", user_id)
         .eq("name", name)
         .limit(1)
         .execute()
@@ -71,15 +151,22 @@ def create_person(
         get_table("people")
         .insert(
             {
+                "user_id": user_id,
                 "name": name,
-                "notes": notes.strip() if notes else None,
+                "notes": (
+                    notes.strip()
+                    if notes
+                    else None
+                ),
             }
         )
         .execute()
     )
 
     if not response.data:
-        raise RuntimeError("Person could not be created.")
+        raise RuntimeError(
+            "Person could not be created."
+        )
 
     return response.data[0]
 
@@ -99,16 +186,24 @@ def record_money_received(
     """
     Record money received from a friend.
 
-    This increases the bank account balance but is NOT personal income.
+    This increases the bank account balance but is NOT
+    personal income.
     """
 
+    # --------------------------------------------------------
+    # Validate ownership
+    # --------------------------------------------------------
+    person = _get_owned_person(person_id)
+    _validate_owned_account(account_id)
+
+    # --------------------------------------------------------
+    # Validate amount
+    # --------------------------------------------------------
     amount = validate_amount(amount)
 
-    person = get_person(person_id)
-
-    if person is None:
-        raise ValueError("Person not found.")
-
+    # --------------------------------------------------------
+    # Create transaction
+    # --------------------------------------------------------
     transaction = create_transaction(
         transaction_date=received_date,
         transaction_type="friend_money_received",
@@ -119,10 +214,16 @@ def record_money_received(
         notes=notes,
     )
 
+    user_id = get_current_user_id()
+
+    # --------------------------------------------------------
+    # Create friend-money record
+    # --------------------------------------------------------
     response = (
         get_table("friends_money")
         .insert(
             {
+                "user_id": user_id,
                 "person_id": person_id,
                 "transaction_id": transaction["id"],
                 "account_id": account_id,
@@ -135,7 +236,11 @@ def record_money_received(
                     else None
                 ),
                 "status": "holding",
-                "notes": notes.strip() if notes else None,
+                "notes": (
+                    notes.strip()
+                    if notes
+                    else None
+                ),
             }
         )
         .execute()
@@ -150,10 +255,14 @@ def record_money_received(
 
 
 def get_friend_money_records() -> list[dict]:
-    """Return all friend-money records."""
+    """Return all friend-money records for the current user."""
+
+    user_id = get_current_user_id()
+
     response = (
         get_table("friends_money")
         .select("*")
+        .eq("user_id", user_id)
         .order("received_date", desc=True)
         .execute()
     )
@@ -162,7 +271,7 @@ def get_friend_money_records() -> list[dict]:
 
 
 def get_total_friend_money_held() -> Decimal:
-    """Return the total outstanding friend money."""
+    """Return the total outstanding friend money for the current user."""
 
     records = get_friend_money_records()
 
@@ -188,11 +297,16 @@ def record_money_returned(
     """
 
     amount = validate_amount(amount)
+    user_id = get_current_user_id()
 
+    # --------------------------------------------------------
+    # Get ONLY current user's record
+    # --------------------------------------------------------
     response = (
         get_table("friends_money")
         .select("*")
         .eq("id", friend_money_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -214,16 +328,30 @@ def record_money_returned(
 
     outstanding = received - already_returned
 
+    if outstanding <= Decimal("0.00"):
+        raise ValueError(
+            "This friend-money record has already been fully returned."
+        )
+
     if amount > outstanding:
         raise ValueError(
             "Return amount cannot exceed outstanding friend money."
         )
 
-    person = get_person(record["person_id"])
+    # --------------------------------------------------------
+    # Ownership validation
+    # --------------------------------------------------------
+    person = _get_owned_person(
+        record["person_id"]
+    )
 
-    if person is None:
-        raise ValueError("Person not found.")
+    _validate_owned_account(
+        record["account_id"]
+    )
 
+    # --------------------------------------------------------
+    # Create return transaction
+    # --------------------------------------------------------
     transaction = create_transaction(
         transaction_date=return_date,
         transaction_type="friend_money_returned",
@@ -241,6 +369,9 @@ def record_money_returned(
     else:
         status = "partially_returned"
 
+    # --------------------------------------------------------
+    # Update ONLY current user's record
+    # --------------------------------------------------------
     updated = (
         get_table("friends_money")
         .update(
@@ -255,6 +386,7 @@ def record_money_returned(
             }
         )
         .eq("id", friend_money_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
@@ -273,17 +405,24 @@ def update_friend_money(
     """
     Update a friend-money record.
 
-    Keeps the linked received transaction synchronized when
-    transaction-level fields are changed.
+    Only editable non-financial fields are allowed.
     """
 
     if not updates:
-        raise ValueError("No changes were provided.")
+        raise ValueError(
+            "No changes were provided."
+        )
 
+    user_id = get_current_user_id()
+
+    # --------------------------------------------------------
+    # Get ONLY current user's record
+    # --------------------------------------------------------
     response = (
         get_table("friends_money")
         .select("*")
         .eq("id", friend_money_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -300,6 +439,16 @@ def update_friend_money(
         "notes",
     }
 
+    unexpected_fields = (
+        set(updates) - allowed_fields
+    )
+
+    if unexpected_fields:
+        raise ValueError(
+            "Unsupported friend-money field(s): "
+            + ", ".join(sorted(unexpected_fields))
+        )
+
     friend_updates = {
         key: value
         for key, value in updates.items()
@@ -307,10 +456,14 @@ def update_friend_money(
     }
 
     if "expected_return_date" in friend_updates:
-        value = friend_updates["expected_return_date"]
+        value = friend_updates[
+            "expected_return_date"
+        ]
 
         friend_updates["expected_return_date"] = (
-            value.isoformat() if value else None
+            value.isoformat()
+            if value
+            else None
         )
 
     if "notes" in friend_updates:
@@ -321,10 +474,12 @@ def update_friend_money(
         )
 
     if friend_updates:
+
         updated = (
             get_table("friends_money")
             .update(friend_updates)
             .eq("id", friend_money_id)
+            .eq("user_id", user_id)
             .execute()
         )
 
@@ -333,8 +488,11 @@ def update_friend_money(
                 "Friend money record could not be updated."
             )
 
-    # Keep the linked received transaction's notes synchronized.
+    # --------------------------------------------------------
+    # Synchronize linked transaction notes
+    # --------------------------------------------------------
     if "notes" in updates:
+
         (
             get_table("transactions")
             .update(
@@ -346,14 +504,25 @@ def update_friend_money(
                     )
                 }
             )
-            .eq("id", record["transaction_id"])
+            .eq(
+                "id",
+                record["transaction_id"],
+            )
+            .eq(
+                "user_id",
+                user_id,
+            )
             .execute()
         )
 
+    # --------------------------------------------------------
+    # Return current user's final record
+    # --------------------------------------------------------
     final_response = (
         get_table("friends_money")
         .select("*")
         .eq("id", friend_money_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -385,13 +554,17 @@ def record_money_lent(
     The amount becomes a receivable from the friend.
     """
 
+    # --------------------------------------------------------
+    # Validate ownership
+    # --------------------------------------------------------
+    person = _get_owned_person(person_id)
+    _validate_owned_account(account_id)
+
     amount = validate_amount(amount)
 
-    person = get_person(person_id)
-
-    if person is None:
-        raise ValueError("Person not found.")
-
+    # --------------------------------------------------------
+    # Create transaction
+    # --------------------------------------------------------
     transaction = create_transaction(
         transaction_date=lent_date,
         transaction_type="friend_money_lent",
@@ -402,10 +575,16 @@ def record_money_lent(
         notes=notes,
     )
 
+    user_id = get_current_user_id()
+
+    # --------------------------------------------------------
+    # Create receivable record
+    # --------------------------------------------------------
     response = (
         get_table("money_lent")
         .insert(
             {
+                "user_id": user_id,
                 "person_id": person_id,
                 "transaction_id": transaction["id"],
                 "account_id": account_id,
@@ -418,7 +597,11 @@ def record_money_lent(
                     else None
                 ),
                 "status": "lent",
-                "notes": notes.strip() if notes else None,
+                "notes": (
+                    notes.strip()
+                    if notes
+                    else None
+                ),
             }
         )
         .execute()
@@ -433,11 +616,14 @@ def record_money_lent(
 
 
 def get_money_lent_records() -> list[dict]:
-    """Return all money-lent records."""
+    """Return all money-lent records for the current user."""
+
+    user_id = get_current_user_id()
 
     response = (
         get_table("money_lent")
         .select("*")
+        .eq("user_id", user_id)
         .order("lent_date", desc=True)
         .execute()
     )
@@ -474,11 +660,16 @@ def record_money_lent_returned(
     """
 
     amount = validate_amount(amount)
+    user_id = get_current_user_id()
 
+    # --------------------------------------------------------
+    # Get ONLY current user's receivable
+    # --------------------------------------------------------
     response = (
         get_table("money_lent")
         .select("*")
         .eq("id", money_lent_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -510,18 +701,29 @@ def record_money_lent_returned(
             "Return amount cannot exceed outstanding lent money."
         )
 
-    person = get_person(record["person_id"])
+    # --------------------------------------------------------
+    # Ownership validation
+    # --------------------------------------------------------
+    person = _get_owned_person(
+        record["person_id"]
+    )
 
-    if person is None:
-        raise ValueError("Person not found.")
+    _validate_owned_account(
+        record["account_id"]
+    )
 
+    # --------------------------------------------------------
+    # Create return transaction
+    # --------------------------------------------------------
     transaction = create_transaction(
         transaction_date=return_date,
         transaction_type="friend_money_lent_returned",
         amount=amount,
         source_account_id=record["account_id"],
         person_id=record["person_id"],
-        description=f"Money received back from {person['name']}",
+        description=(
+            f"Money received back from {person['name']}"
+        ),
         notes=notes,
     )
 
@@ -532,6 +734,9 @@ def record_money_lent_returned(
     else:
         status = "partially_returned"
 
+    # --------------------------------------------------------
+    # Update ONLY current user's record
+    # --------------------------------------------------------
     updated = (
         get_table("money_lent")
         .update(
@@ -546,6 +751,7 @@ def record_money_lent_returned(
             }
         )
         .eq("id", money_lent_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
@@ -569,12 +775,20 @@ def update_money_lent(
     """
 
     if not updates:
-        raise ValueError("No changes were provided.")
+        raise ValueError(
+            "No changes were provided."
+        )
 
+    user_id = get_current_user_id()
+
+    # --------------------------------------------------------
+    # Get ONLY current user's record
+    # --------------------------------------------------------
     response = (
         get_table("money_lent")
         .select("*")
         .eq("id", money_lent_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -591,6 +805,16 @@ def update_money_lent(
         "notes",
     }
 
+    unexpected_fields = (
+        set(updates) - allowed_fields
+    )
+
+    if unexpected_fields:
+        raise ValueError(
+            "Unsupported money-lent field(s): "
+            + ", ".join(sorted(unexpected_fields))
+        )
+
     lent_updates = {
         key: value
         for key, value in updates.items()
@@ -598,10 +822,14 @@ def update_money_lent(
     }
 
     if "expected_return_date" in lent_updates:
-        value = lent_updates["expected_return_date"]
+        value = lent_updates[
+            "expected_return_date"
+        ]
 
         lent_updates["expected_return_date"] = (
-            value.isoformat() if value else None
+            value.isoformat()
+            if value
+            else None
         )
 
     if "notes" in lent_updates:
@@ -612,10 +840,12 @@ def update_money_lent(
         )
 
     if lent_updates:
+
         updated = (
             get_table("money_lent")
             .update(lent_updates)
             .eq("id", money_lent_id)
+            .eq("user_id", user_id)
             .execute()
         )
 
@@ -624,8 +854,11 @@ def update_money_lent(
                 "Money lent record could not be updated."
             )
 
-    # Keep the linked lending transaction's notes synchronized.
+    # --------------------------------------------------------
+    # Synchronize linked transaction notes
+    # --------------------------------------------------------
     if "notes" in updates:
+
         (
             get_table("transactions")
             .update(
@@ -637,14 +870,25 @@ def update_money_lent(
                     )
                 }
             )
-            .eq("id", record["transaction_id"])
+            .eq(
+                "id",
+                record["transaction_id"],
+            )
+            .eq(
+                "user_id",
+                user_id,
+            )
             .execute()
         )
 
+    # --------------------------------------------------------
+    # Return current user's final record
+    # --------------------------------------------------------
     final_response = (
         get_table("money_lent")
         .select("*")
         .eq("id", money_lent_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )

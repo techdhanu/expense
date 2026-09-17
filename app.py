@@ -5,6 +5,12 @@ from services.authentication_service import (
     authenticate_user,
     create_user,
 )
+from services.account_service import (
+    ensure_default_accounts,
+)
+from services.category_service import (
+    ensure_default_categories,
+)
 
 
 # =========================================================
@@ -176,9 +182,50 @@ with login_tab:
 
                 if user:
 
+                    # -------------------------------------------------
+                    # ESTABLISH AUTHENTICATED SESSION
+                    # -------------------------------------------------
+
                     st.session_state.authenticated = True
                     st.session_state.user_id = user["id"]
                     st.session_state.username = user["username"]
+
+                    # -------------------------------------------------
+                    # INITIALIZE USER WORKSPACE
+                    #
+                    # These functions are user-scoped and therefore
+                    # create/find records only for the logged-in user.
+                    # -------------------------------------------------
+
+                    try:
+
+                        ensure_default_accounts()
+                        ensure_default_categories()
+
+                    except Exception as setup_exc:
+
+                        # Do not allow the user into the application
+                        # if their initial workspace could not be created.
+
+                        st.session_state.authenticated = False
+                        st.session_state.user_id = None
+                        st.session_state.username = None
+
+                        st.error(
+                            "Your account was authenticated, but "
+                            "your financial workspace could not be "
+                            "initialized."
+                        )
+
+                        st.caption(
+                            f"Setup error: {setup_exc}"
+                        )
+
+                        st.stop()
+
+                    # -------------------------------------------------
+                    # SUCCESS
+                    # -------------------------------------------------
 
                     st.success(
                         "Login successful!"

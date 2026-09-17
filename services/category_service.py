@@ -1,4 +1,5 @@
 from database.queries import get_table
+from services.authentication_service import get_current_user_id
 from utils.validators import validate_required_text
 
 
@@ -26,10 +27,14 @@ DEFAULT_CATEGORIES = [
 
 
 def get_all_categories():
-    """Return all active categories."""
+    """Return all active categories for the current user."""
+
+    user_id = get_current_user_id()
+
     response = (
         get_table("categories")
         .select("*")
+        .eq("user_id", user_id)
         .eq("is_active", True)
         .order("category_type")
         .order("name")
@@ -40,18 +45,24 @@ def get_all_categories():
 
 
 def get_categories_by_type(category_type: str):
-    """Return active categories for income or expense."""
+    """Return active categories of a specific type for the current user."""
+
+    user_id = get_current_user_id()
+
     category_type = validate_required_text(
         category_type,
         "Category type",
     )
 
     if category_type not in {"income", "expense"}:
-        raise ValueError("Category type must be income or expense.")
+        raise ValueError(
+            "Category type must be income or expense."
+        )
 
     response = (
         get_table("categories")
         .select("*")
+        .eq("user_id", user_id)
         .eq("category_type", category_type)
         .eq("is_active", True)
         .order("name")
@@ -62,11 +73,15 @@ def get_categories_by_type(category_type: str):
 
 
 def get_category(category_id: str):
-    """Return one category by ID."""
+    """Return one category belonging to the current user."""
+
+    user_id = get_current_user_id()
+
     response = (
         get_table("categories")
         .select("*")
         .eq("id", category_id)
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
@@ -74,9 +89,18 @@ def get_category(category_id: str):
     return response.data[0] if response.data else None
 
 
-def create_category(name: str, category_type: str):
-    """Create a new category."""
-    name = validate_required_text(name, "Category name")
+def create_category(
+    name: str,
+    category_type: str,
+):
+    """Create a category for the current user."""
+
+    user_id = get_current_user_id()
+
+    name = validate_required_text(
+        name,
+        "Category name",
+    )
 
     category_type = validate_required_text(
         category_type,
@@ -84,11 +108,14 @@ def create_category(name: str, category_type: str):
     )
 
     if category_type not in {"income", "expense"}:
-        raise ValueError("Category type must be income or expense.")
+        raise ValueError(
+            "Category type must be income or expense."
+        )
 
     existing = (
         get_table("categories")
         .select("id")
+        .eq("user_id", user_id)
         .eq("name", name)
         .eq("category_type", category_type)
         .limit(1)
@@ -96,12 +123,15 @@ def create_category(name: str, category_type: str):
     )
 
     if existing.data:
-        raise ValueError("Category already exists.")
+        raise ValueError(
+            "Category already exists."
+        )
 
     response = (
         get_table("categories")
         .insert(
             {
+                "user_id": user_id,
                 "name": name,
                 "category_type": category_type,
                 "is_active": True,
@@ -111,29 +141,47 @@ def create_category(name: str, category_type: str):
     )
 
     if not response.data:
-        raise RuntimeError("Category could not be created.")
+        raise RuntimeError(
+            "Category could not be created."
+        )
 
     return response.data[0]
 
 
 def ensure_default_categories():
     """
-    Create missing default categories.
+    Create missing default categories for the current user.
 
     Safe to run multiple times because existing categories
     are skipped.
     """
-    existing = get_all_categories()
+
+    user_id = get_current_user_id()
+
+    response = (
+        get_table("categories")
+        .select("name, category_type")
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    existing = response.data or []
 
     existing_keys = {
-        (category["name"], category["category_type"])
+        (
+            category["name"],
+            category["category_type"],
+        )
         for category in existing
     }
 
     created = []
 
     for category in DEFAULT_CATEGORIES:
-        key = (category["name"], category["category_type"])
+        key = (
+            category["name"],
+            category["category_type"],
+        )
 
         if key in existing_keys:
             continue
@@ -148,21 +196,38 @@ def ensure_default_categories():
     return get_all_categories()
 
 
-def deactivate_category(category_id: str):
-    """Deactivate a category without deleting historical data."""
+def deactivate_category(
+    category_id: str,
+):
+    """
+    Deactivate a category belonging to the current user
+    without deleting historical data.
+    """
+
+    user_id = get_current_user_id()
+
     category = get_category(category_id)
 
     if category is None:
-        raise ValueError("Category not found.")
+        raise ValueError(
+            "Category not found."
+        )
 
     response = (
         get_table("categories")
-        .update({"is_active": False})
+        .update(
+            {
+                "is_active": False,
+            }
+        )
         .eq("id", category_id)
+        .eq("user_id", user_id)
         .execute()
     )
 
     if not response.data:
-        raise RuntimeError("Category could not be deactivated.")
+        raise RuntimeError(
+            "Category could not be deactivated."
+        )
 
     return response.data[0]
