@@ -1,3 +1,4 @@
+
 -- ============================================================
 -- PERSONAL EXPENSE TRACKER
 -- Supabase PostgreSQL Database Schema
@@ -136,17 +137,19 @@ CREATE TABLE IF NOT EXISTS transactions (
         CHECK (amount > 0),
 
     CONSTRAINT transactions_type_valid
-        CHECK (
-            transaction_type IN (
-                'income',
-                'expense',
-                'internal_transfer',
-                'friend_money_received',
-                'friend_money_returned',
-                'balance_adjustment',
-                'savings_goal_contribution'
-            )
-        ),
+CHECK (
+    transaction_type IN (
+        'income',
+        'expense',
+        'internal_transfer',
+        'friend_money_received',
+        'friend_money_returned',
+        'friend_money_lent',
+        'friend_money_lent_returned',
+        'balance_adjustment',
+        'savings_goal_contribution'
+    )
+),
 
     CONSTRAINT transactions_payment_method_valid
         CHECK (
@@ -578,8 +581,9 @@ begin
         select *
         from jsonb_populate_recordset(null::app_users, records)
         on conflict (id) do update set
-            email = excluded.email,
+            username = excluded.username,
             password_hash = excluded.password_hash,
+            is_active = excluded.is_active,
             updated_at = excluded.updated_at;
 
         get diagnostics record_count = row_count;
@@ -680,7 +684,7 @@ begin
             amount = excluded.amount,
             transfer_date = excluded.transfer_date,
             description = excluded.description,
-            notes = excluded.notes;
+            updated_at = excluded.updated_at;
 
         get diagnostics record_count = row_count;
     else
@@ -720,9 +724,9 @@ begin
         from jsonb_populate_recordset(null::budgets, records)
         on conflict (id) do update set
             category_id = excluded.category_id,
-            amount = excluded.amount,
-            month = excluded.month,
-            notes = excluded.notes,
+            budget_month = excluded.budget_month,
+            budget_year = excluded.budget_year,
+            budget_amount = excluded.budget_amount,
             updated_at = excluded.updated_at;
 
         get diagnostics record_count = row_count;
@@ -778,7 +782,7 @@ begin
         select *
         from jsonb_populate_recordset(null::recurring_transactions, records)
         on conflict (id) do update set
-            name = excluded.name,
+            transaction_name = excluded.transaction_name,
             transaction_type = excluded.transaction_type,
             amount = excluded.amount,
             account_id = excluded.account_id,
@@ -807,7 +811,8 @@ begin
         from jsonb_populate_recordset(null::backup_history, records)
         on conflict (id) do update set
             backup_type = excluded.backup_type,
-            filename = excluded.filename,
+            backup_filename = excluded.backup_filename,
+            backup_version = excluded.backup_version,
             record_count = excluded.record_count,
             created_at = excluded.created_at;
 
@@ -845,3 +850,81 @@ begin
     );
 end;
 $$;
+
+-- ============================================================
+-- 7B. MONEY LENT TO FRIENDS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS money_lent (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    person_id UUID NOT NULL,
+
+    transaction_id UUID NOT NULL,
+
+    account_id UUID NOT NULL,
+
+    amount_lent NUMERIC(15, 2) NOT NULL,
+
+    amount_returned NUMERIC(15, 2) NOT NULL DEFAULT 0,
+
+    lent_date DATE NOT NULL,
+
+    expected_return_date DATE,
+
+    status VARCHAR(30) NOT NULL DEFAULT 'lent',
+
+    notes TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT money_lent_amount_positive
+        CHECK (amount_lent > 0),
+
+    CONSTRAINT money_lent_returned_non_negative
+        CHECK (amount_returned >= 0),
+
+    CONSTRAINT money_lent_returned_not_greater
+        CHECK (amount_returned <= amount_lent),
+
+    CONSTRAINT money_lent_status_valid
+        CHECK (
+            status IN (
+                'lent',
+                'partially_returned',
+                'fully_returned'
+            )
+        ),
+
+    CONSTRAINT money_lent_person_fk
+        FOREIGN KEY (person_id)
+        REFERENCES people(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT money_lent_transaction_fk
+        FOREIGN KEY (transaction_id)
+        REFERENCES transactions(id)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT money_lent_account_fk
+        FOREIGN KEY (account_id)
+        REFERENCES accounts(id)
+        ON DELETE RESTRICT
+);
+-- ============================================================
+-- INDEXES FOR MONEY LENT
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_person
+    ON money_lent(person_id);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_account
+    ON money_lent(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_status
+    ON money_lent(status);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_lent_date
+    ON money_lent(lent_date);

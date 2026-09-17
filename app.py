@@ -1,339 +1,338 @@
 import streamlit as st
-from decimal import Decimal
 
-from components.navigation import (
-    setup_page,
-    require_login,
-    show_app_header,
+from components.navigation import setup_page
+from services.authentication_service import (
+    authenticate_user,
+    create_user,
 )
-from services.account_service import (
-    get_all_account_balances,
-    get_total_current_balance,
-)
-from services.friend_money_service import (
-    get_total_friend_money_held,
-)
-from services.transaction_service import (
-    get_filtered_transactions,
-)
-from utils.calculations import calculate_actual_money
 
 
-# ---------------------------------------------------------
-# PAGE SETUP
-# ---------------------------------------------------------
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
 
 setup_page(
-    "Dashboard",
-    "Your personal financial overview",
-)
-
-require_login()
-
-show_app_header(
-    "Dashboard",
-    "Your financial overview at a glance",
+    title="Expense Tracker",
+    icon="💰",
+    layout="centered",
 )
 
 
-# ---------------------------------------------------------
-# LOAD FINANCIAL DATA
-# ---------------------------------------------------------
+# =========================================================
+# SESSION STATE
+# =========================================================
 
-account_balances = get_all_account_balances()
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-total_balance = get_total_current_balance()
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
 
-friend_money_held = get_total_friend_money_held()
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-actual_money = calculate_actual_money(
-    total_balance,
-    friend_money_held,
+
+# =========================================================
+# REDIRECT AUTHENTICATED USERS
+# =========================================================
+
+if st.session_state.authenticated:
+
+    st.switch_page(
+        "pages/Dashboard.py"
+    )
+
+
+# =========================================================
+# LOGIN PAGE STYLING
+# =========================================================
+
+st.markdown(
+    """
+    <style>
+
+    .login-container {
+        max-width: 480px;
+        margin: 0 auto;
+        padding-top: 30px;
+    }
+
+    .login-title {
+        text-align: center;
+        font-size: 2.2rem;
+        font-weight: 700;
+        margin-bottom: 5px;
+    }
+
+    .login-subtitle {
+        text-align: center;
+        color: #9ca3af;
+        margin-bottom: 30px;
+    }
+
+    .login-card {
+        padding: 10px 5px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------
-# FINANCIAL OVERVIEW
-# ---------------------------------------------------------
+# =========================================================
+# LOGIN CONTAINER
+# =========================================================
 
-st.markdown("## 💰 Financial Overview")
-
-st.caption(
-    "A clear view of your available money, account balances, "
-    "and money currently held for others."
+st.markdown(
+    '<div class="login-container">',
+    unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------
-# MAIN KPI CARDS
-# ---------------------------------------------------------
+# =========================================================
+# HEADER
+# =========================================================
 
-col1, col2, col3 = st.columns(3)
+st.markdown(
+    '<div class="login-title">💰 Expense Tracker</div>',
+    unsafe_allow_html=True,
+)
 
-with col1:
-    st.metric(
-        "Total Balance",
-        f"₹{Decimal(str(total_balance)):,.2f}",
+st.markdown(
+    '<div class="login-subtitle">'
+    "Manage your money simply and securely."
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# LOGIN / CREATE ACCOUNT
+# =========================================================
+
+login_tab, create_tab = st.tabs(
+    [
+        "🔐 Login",
+        "👤 Create Account",
+    ]
+)
+
+
+# =========================================================
+# LOGIN
+# =========================================================
+
+with login_tab:
+
+    st.markdown(
+        "### Welcome back 👋"
     )
 
-with col2:
-    st.metric(
-        "Actual Money",
-        f"₹{Decimal(str(actual_money)):,.2f}",
+    username = st.text_input(
+        "Username",
+        placeholder="Enter your username",
+        key="login_username",
     )
 
-with col3:
-    st.metric(
-        "Friend's Money Held",
-        f"₹{Decimal(str(friend_money_held)):,.2f}",
+    password = st.text_input(
+        "Password",
+        type="password",
+        placeholder="Enter your password",
+        key="login_password",
     )
 
-
-st.divider()
-
-
-# ---------------------------------------------------------
-# ACCOUNT BALANCES
-# ---------------------------------------------------------
-
-st.markdown("### 🏦 Account Balances")
-
-if not account_balances:
-
-    st.info("No active accounts found.")
-
-else:
-
-    account_columns = st.columns(
-        min(len(account_balances), 3)
+    st.caption(
+        "Enter the username and password you used "
+        "when creating your account."
     )
 
-    for index, account in enumerate(account_balances):
+    if st.button(
+        "🔐 Login",
+        use_container_width=True,
+        type="primary",
+    ):
 
-        column = account_columns[
-            index % len(account_columns)
-        ]
+        if not username.strip():
 
-        account_name = account.get(
-            "account_name",
-            account.get("name", "Account"),
-        )
-
-        balance = Decimal(
-            str(
-                account.get(
-                    "current_balance",
-                    account.get("balance", "0.00"),
-                )
+            st.error(
+                "Please enter your username."
             )
-        )
 
-        with column:
+        elif not password:
 
-            st.markdown(
-                f"""
-                <div style="
-                    padding: 18px;
-                    border-radius: 14px;
-                    border: 1px solid rgba(128,128,128,0.25);
-                    margin-bottom: 12px;
-                ">
-                    <div style="
-                        font-size: 14px;
-                        opacity: 0.75;
-                        margin-bottom: 8px;
-                    ">
-                        🏦 {account_name}
-                    </div>
-
-                    <div style="
-                        font-size: 25px;
-                        font-weight: 700;
-                    ">
-                        ₹{balance:,.2f}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            st.error(
+                "Please enter your password."
             )
-
-
-st.divider()
-
-
-# ---------------------------------------------------------
-# RECENT TRANSACTIONS
-# ---------------------------------------------------------
-
-st.markdown("### 🧾 Recent Transactions")
-
-recent_transactions = get_filtered_transactions(
-    start_date=None,
-    end_date=None,
-    transaction_types=None,
-    account_ids=None,
-    category_ids=None,
-)
-
-# Keep only the latest five transactions.
-recent_transactions = recent_transactions[:5]
-
-
-if not recent_transactions:
-
-    st.info(
-        "No transactions yet. "
-        "Add your first transaction to see activity here."
-    )
-
-else:
-
-    for transaction in recent_transactions:
-
-        transaction_type = transaction.get(
-            "transaction_type",
-            "",
-        )
-
-        amount = Decimal(
-            str(
-                transaction.get(
-                    "amount",
-                    "0.00",
-                )
-            )
-        )
-
-        description = (
-            transaction.get("description")
-            or transaction_type.replace("_", " ").title()
-        )
-
-        transaction_date = transaction.get(
-            "transaction_date",
-            "",
-        )
-
-        # Transaction display metadata
-        if transaction_type == "income":
-
-            icon = "🟢"
-            prefix = "+"
-
-        elif transaction_type == "expense":
-
-            icon = "🔴"
-            prefix = "-"
-
-        elif transaction_type == "internal_transfer":
-
-            icon = "🔄"
-            prefix = ""
-
-        elif transaction_type == "friend_money_received":
-
-            icon = "👥"
-            prefix = "+"
-
-        elif transaction_type == "friend_money_returned":
-
-            icon = "↩️"
-            prefix = "-"
-
-        elif transaction_type == "savings_goal_contribution":
-
-            icon = "🎯"
-            prefix = "-"
 
         else:
 
-            icon = "💳"
-            prefix = ""
+            try:
 
-        col1, col2, col3 = st.columns(
-            [0.12, 0.58, 0.30]
-        )
+                user = authenticate_user(
+                    username.strip(),
+                    password,
+                )
 
-        with col1:
-            st.write(icon)
+                if user:
 
-        with col2:
+                    st.session_state.authenticated = True
+                    st.session_state.user_id = user["id"]
+                    st.session_state.username = user["username"]
 
-            st.write(
-                f"**{description}**"
-            )
+                    st.success(
+                        "Login successful!"
+                    )
 
-            st.caption(
-                f"{transaction_date} • "
-                f"{transaction_type.replace('_', ' ').title()}"
-            )
+                    st.switch_page(
+                        "pages/Dashboard.py"
+                    )
 
-        with col3:
+                else:
 
-            st.markdown(
-                f"""
-                <div style="
-                    text-align: right;
-                    font-weight: 600;
-                    padding-top: 6px;
-                ">
-                    {prefix}₹{amount:,.2f}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    st.error(
+                        "Invalid username or password."
+                    )
 
-        st.divider()
+            except Exception:
+
+                st.error(
+                    "Login failed. Please try again."
+                )
 
 
-# ---------------------------------------------------------
-# QUICK ACTIONS
-# ---------------------------------------------------------
+# =========================================================
+# CREATE ACCOUNT
+# =========================================================
 
-st.markdown("### ⚡ Quick Actions")
+with create_tab:
 
-action1, action2, action3 = st.columns(3)
+    st.markdown(
+        "### Create your account 👤"
+    )
 
-with action1:
+    st.info(
+        "Create your account once. Your password is "
+        "stored securely as a hash and is never stored "
+        "as plain text."
+    )
+
+    new_username = st.text_input(
+        "Username",
+        placeholder="Choose a username",
+        key="create_username",
+    )
+
+    new_password = st.text_input(
+        "Password",
+        type="password",
+        placeholder="Choose a password",
+        key="create_password",
+    )
+
+    confirm_password = st.text_input(
+        "Confirm Password",
+        type="password",
+        placeholder="Re-enter your password",
+        key="confirm_password",
+    )
+
+    st.caption(
+        "Use a strong password that you do not use elsewhere."
+    )
 
     if st.button(
-        "➕ Add Transaction",
+        "👤 Create Account",
         use_container_width=True,
+        type="primary",
     ):
-        st.switch_page(
-            "pages/Add_transaction.py"
-        )
+
+        username_clean = new_username.strip()
+
+        if not username_clean:
+
+            st.error(
+                "Please enter a username."
+            )
+
+        elif len(username_clean) < 3:
+
+            st.error(
+                "Username must contain at least 3 characters."
+            )
+
+        elif not new_password:
+
+            st.error(
+                "Please enter a password."
+            )
+
+        elif len(new_password) < 8:
+
+            st.error(
+                "Password must contain at least 8 characters."
+            )
+
+        elif new_password != confirm_password:
+
+            st.error(
+                "Passwords do not match."
+            )
+
+        else:
+
+            try:
+
+                user = create_user(
+                    username_clean,
+                    new_password,
+                )
+
+                if user:
+
+                    st.success(
+                        "Account created successfully! "
+                        "You can now log in."
+                    )
+
+                    st.info(
+                        "Go to the Login tab and enter your credentials."
+                    )
+
+                else:
+
+                    st.error(
+                        "Account could not be created."
+                    )
+
+            except Exception as exc:
+
+                error_text = str(exc).lower()
+
+                if (
+                    "duplicate" in error_text
+                    or "unique" in error_text
+                    or "already exists" in error_text
+                ):
+
+                    st.error(
+                        "That username already exists. "
+                        "Please choose another username."
+                    )
+
+                else:
+
+                    st.error(
+                        "Could not create account. "
+                        "Please try again."
+                    )
 
 
-with action2:
+# =========================================================
+# CLOSE CONTAINER
+# =========================================================
 
-    if st.button(
-        "📋 Transaction History",
-        use_container_width=True,
-    ):
-        st.switch_page(
-            "pages/Transaction_History.py"
-        )
-
-
-with action3:
-
-    if st.button(
-        "🏦 Accounts",
-        use_container_width=True,
-    ):
-        st.switch_page(
-            "pages/accounts.py"
-        )
-
-
-# ---------------------------------------------------------
-# FOOTER
-# ---------------------------------------------------------
-
-st.divider()
-
-st.caption(
-    "🔒 Financial balances are calculated from your recorded "
-    "transactions and account opening balances."
+st.markdown(
+    "</div>",
+    unsafe_allow_html=True,
 )

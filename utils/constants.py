@@ -2,7 +2,11 @@
 # APPLICATION CONSTANTS
 # ============================================================
 
-# Default accounts required by the application
+
+# ============================================================
+# DEFAULT ACCOUNTS
+# ============================================================
+
 DEFAULT_ACCOUNTS = [
     {
         "name": "Salary Account",
@@ -19,19 +23,39 @@ DEFAULT_ACCOUNTS = [
 ]
 
 
-# Supported transaction types
+# ============================================================
+# TRANSACTION TYPES
+# ============================================================
+
 TRANSACTION_TYPES = [
     "income",
     "expense",
     "internal_transfer",
+
+    # Money received from friends temporarily
     "friend_money_received",
+
+    # Money returned to friends
     "friend_money_returned",
+
+    # Money lent to friends
+    "friend_money_lent",
+
+    # Money received back from friends
+    "friend_money_lent_returned",
+
+    # Manual balance correction
     "balance_adjustment",
+
+    # Contribution toward a savings goal
     "savings_goal_contribution",
 ]
 
 
-# Supported payment methods
+# ============================================================
+# PAYMENT METHODS
+# ============================================================
+
 PAYMENT_METHODS = [
     "upi",
     "debit_card",
@@ -42,7 +66,10 @@ PAYMENT_METHODS = [
 ]
 
 
-# Supported account types
+# ============================================================
+# ACCOUNT TYPES
+# ============================================================
+
 ACCOUNT_TYPES = [
     "bank",
     "cash",
@@ -50,7 +77,10 @@ ACCOUNT_TYPES = [
 ]
 
 
-# Supported recurring frequencies
+# ============================================================
+# RECURRING TRANSACTION FREQUENCIES
+# ============================================================
+
 RECURRING_FREQUENCIES = [
     "weekly",
     "monthly",
@@ -59,5 +89,8 @@ RECURRING_FREQUENCIES = [
 ]
 
 
-# Application backup version
+# ============================================================
+# BACKUP
+# ============================================================
+
 BACKUP_VERSION = "1.0"

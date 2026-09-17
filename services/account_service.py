@@ -351,6 +351,12 @@ def get_account_balance(
     Savings contribution
         decreases source account.
 
+    Money lent
+        decreases source account.
+
+    Money lent returned
+        increases source account.
+
     Balance adjustment
         applies the adjustment amount.
     """
@@ -474,6 +480,24 @@ def get_account_balance(
 
             if source_id == account_id:
                 balance -= amount
+
+        # -------------------------------------------------
+        # MONEY LENT
+        # -------------------------------------------------
+
+        elif transaction_type == "friend_money_lent":
+
+            if source_id == account_id:
+                balance -= amount
+
+        # -------------------------------------------------
+        # MONEY LENT RETURNED
+        # -------------------------------------------------
+
+        elif transaction_type == "friend_money_lent_returned":
+
+            if source_id == account_id:
+                balance += amount
 
     return balance.quantize(
         Decimal("0.01")
