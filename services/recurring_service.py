@@ -8,6 +8,10 @@ from utils.constants import RECURRING_FREQUENCIES
 from utils.validators import validate_amount
 
 
+# ============================================================
+# INTERNAL HELPERS
+# ============================================================
+
 def _get_owned_recurring(recurring_id: str) -> dict | None:
     """Return a recurring transaction owned by the current user."""
 
@@ -65,6 +69,10 @@ def _validate_owned_category(category_id: str | None) -> None:
         )
 
 
+# ============================================================
+# READ OPERATIONS
+# ============================================================
+
 def get_all_recurring_transactions(
     active_only: bool = False,
 ) -> list[dict]:
@@ -95,6 +103,10 @@ def get_recurring_transaction(
     return _get_owned_recurring(recurring_id)
 
 
+# ============================================================
+# CREATE RECURRING TRANSACTION
+# ============================================================
+
 def create_recurring_transaction(
     transaction_name: str,
     transaction_type: str,
@@ -113,6 +125,10 @@ def create_recurring_transaction(
 
     user_id = get_current_user_id()
 
+    # --------------------------------------------------------
+    # Basic validation
+    # --------------------------------------------------------
+
     transaction_name = transaction_name.strip()
 
     if not transaction_name:
@@ -130,8 +146,16 @@ def create_recurring_transaction(
 
     amount = validate_amount(amount)
 
+    # --------------------------------------------------------
+    # Ownership validation
+    # --------------------------------------------------------
+
     _validate_owned_account(account_id)
     _validate_owned_category(category_id)
+
+    # --------------------------------------------------------
+    # Transfer validation
+    # --------------------------------------------------------
 
     if transaction_type == "internal_transfer":
         if not destination_account_id:
@@ -147,8 +171,13 @@ def create_recurring_transaction(
         _validate_owned_account(destination_account_id)
 
     else:
-        # These fields should not be used for normal income/expense.
+        # Income and expense transactions must never
+        # retain a destination account.
         destination_account_id = None
+
+    # --------------------------------------------------------
+    # Create recurring definition
+    # --------------------------------------------------------
 
     response = (
         get_table("recurring_transactions")
@@ -181,13 +210,26 @@ def create_recurring_transaction(
     return response.data[0]
 
 
+# ============================================================
+# UPDATE RECURRING TRANSACTION
+# ============================================================
+
 def update_recurring_transaction(
     recurring_id: str,
     updates: dict,
 ) -> dict:
-    """Update a recurring transaction owned by the current user."""
+    """
+    Update a recurring transaction owned by the current user.
+
+    The final transaction definition is always validated for
+    consistency before being saved.
+    """
 
     user_id = get_current_user_id()
+
+    # --------------------------------------------------------
+    # Ownership validation
+    # --------------------------------------------------------
 
     recurring = _get_owned_recurring(recurring_id)
 
@@ -201,6 +243,10 @@ def update_recurring_transaction(
 
     # Never mutate the caller's dictionary.
     updates = dict(updates)
+
+    # --------------------------------------------------------
+    # Allowed fields
+    # --------------------------------------------------------
 
     allowed_fields = {
         "transaction_name",
@@ -218,6 +264,16 @@ def update_recurring_transaction(
         "notes",
     }
 
+    unexpected_fields = (
+        set(updates) - allowed_fields
+    )
+
+    if unexpected_fields:
+        raise ValueError(
+            "Unsupported recurring transaction field(s): "
+            + ", ".join(sorted(unexpected_fields))
+        )
+
     updates = {
         key: value
         for key, value in updates.items()
@@ -225,7 +281,13 @@ def update_recurring_transaction(
     }
 
     if not updates:
-        raise ValueError("No valid changes were provided.")
+        raise ValueError(
+            "No valid changes were provided."
+        )
+
+    # --------------------------------------------------------
+    # Validate transaction name
+    # --------------------------------------------------------
 
     if "transaction_name" in updates:
         updates["transaction_name"] = str(
@@ -237,6 +299,10 @@ def update_recurring_transaction(
                 "Transaction name cannot be empty."
             )
 
+    # --------------------------------------------------------
+    # Validate transaction type
+    # --------------------------------------------------------
+
     if "transaction_type" in updates:
         if updates["transaction_type"] not in {
             "income",
@@ -247,10 +313,20 @@ def update_recurring_transaction(
                 "Invalid recurring transaction type."
             )
 
+    # --------------------------------------------------------
+    # Validate amount
+    # --------------------------------------------------------
+
     if "amount" in updates:
         updates["amount"] = str(
-            validate_amount(updates["amount"])
+            validate_amount(
+                updates["amount"]
+            )
         )
+
+    # --------------------------------------------------------
+    # Validate frequency
+    # --------------------------------------------------------
 
     if "frequency" in updates:
         if updates["frequency"] not in RECURRING_FREQUENCIES:
@@ -258,21 +334,44 @@ def update_recurring_transaction(
                 "Invalid recurring frequency."
             )
 
+    # --------------------------------------------------------
+    # Validate source account
+    # --------------------------------------------------------
+
     if "account_id" in updates:
         _validate_owned_account(
             updates["account_id"]
         )
 
+    # --------------------------------------------------------
+    # Validate destination account
+    # --------------------------------------------------------
+
     if "destination_account_id" in updates:
-        destination_id = updates["destination_account_id"]
+        destination_id = updates[
+            "destination_account_id"
+        ]
 
         if destination_id:
-            _validate_owned_account(destination_id)
+            _validate_owned_account(
+                destination_id
+            )
+
+    # --------------------------------------------------------
+    # Validate category
+    # --------------------------------------------------------
 
     if "category_id" in updates:
         _validate_owned_category(
             updates["category_id"]
         )
+
+    # --------------------------------------------------------
+    # Determine FINAL transaction configuration
+    #
+    # We must validate the resulting record, not just the
+    # individual fields supplied by the caller.
+    # --------------------------------------------------------
 
     transaction_type = updates.get(
         "transaction_type",
@@ -289,7 +388,12 @@ def update_recurring_transaction(
         recurring.get("destination_account_id"),
     )
 
+    # --------------------------------------------------------
+    # Final transfer consistency validation
+    # --------------------------------------------------------
+
     if transaction_type == "internal_transfer":
+
         if not destination_account_id:
             raise ValueError(
                 "Transfer requires a destination account."
@@ -300,23 +404,47 @@ def update_recurring_transaction(
                 "Source and destination accounts must be different."
             )
 
-        _validate_owned_account(destination_account_id)
+        # Validate the FINAL destination account as well.
+        _validate_owned_account(
+            destination_account_id
+        )
 
-    elif "destination_account_id" in updates:
+    else:
+        # CRITICAL FIX:
+        #
+        # Income and expense transactions must NEVER retain
+        # a destination account, even when the caller only
+        # changes transaction_type and does not explicitly
+        # provide destination_account_id.
         updates["destination_account_id"] = None
+
+    # --------------------------------------------------------
+    # Date conversion
+    # --------------------------------------------------------
 
     for field in [
         "start_date",
         "next_due_date",
     ]:
         if field in updates and updates[field]:
+
             if isinstance(updates[field], date):
                 updates[field] = updates[field].isoformat()
 
-    if "notes" in updates and updates["notes"]:
-        updates["notes"] = str(
-            updates["notes"]
-        ).strip()
+    # --------------------------------------------------------
+    # Notes
+    # --------------------------------------------------------
+
+    if "notes" in updates:
+        updates["notes"] = (
+            str(updates["notes"]).strip()
+            if updates["notes"]
+            else None
+        )
+
+    # --------------------------------------------------------
+    # Final ownership-protected update
+    # --------------------------------------------------------
 
     response = (
         get_table("recurring_transactions")
@@ -334,6 +462,10 @@ def update_recurring_transaction(
     return response.data[0]
 
 
+# ============================================================
+# DEACTIVATE RECURRING TRANSACTION
+# ============================================================
+
 def deactivate_recurring_transaction(
     recurring_id: str,
 ) -> dict:
@@ -350,7 +482,11 @@ def deactivate_recurring_transaction(
 
     response = (
         get_table("recurring_transactions")
-        .update({"is_active": False})
+        .update(
+            {
+                "is_active": False,
+            }
+        )
         .eq("id", recurring_id)
         .eq("user_id", user_id)
         .execute()
@@ -363,6 +499,10 @@ def deactivate_recurring_transaction(
 
     return response.data[0]
 
+
+# ============================================================
+# ACTIVATE RECURRING TRANSACTION
+# ============================================================
 
 def activate_recurring_transaction(
     recurring_id: str,
@@ -380,7 +520,11 @@ def activate_recurring_transaction(
 
     response = (
         get_table("recurring_transactions")
-        .update({"is_active": True})
+        .update(
+            {
+                "is_active": True,
+            }
+        )
         .eq("id", recurring_id)
         .eq("user_id", user_id)
         .execute()
@@ -394,12 +538,16 @@ def activate_recurring_transaction(
     return response.data[0]
 
 
+# ============================================================
+# DUE RECURRING TRANSACTIONS
+# ============================================================
+
 def get_due_recurring_transactions(
     as_of_date: date | None = None,
 ) -> list[dict]:
     """
-    Return active recurring transactions owned by the current user
-    whose next due date is today or earlier.
+    Return active recurring transactions owned by the
+    current user whose next due date is today or earlier.
     """
 
     user_id = get_current_user_id()
@@ -411,7 +559,10 @@ def get_due_recurring_transactions(
         .select("*")
         .eq("user_id", user_id)
         .eq("is_active", True)
-        .lte("next_due_date", as_of_date.isoformat())
+        .lte(
+            "next_due_date",
+            as_of_date.isoformat(),
+        )
         .order("next_due_date")
         .execute()
     )

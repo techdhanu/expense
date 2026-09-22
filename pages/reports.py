@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from collections import defaultdict
 
 import pandas as pd
@@ -12,10 +12,12 @@ from components.navigation import (
     show_app_header,
 )
 
-from database.queries import get_table
-
 from services.account_service import (
     get_all_account_balances,
+)
+
+from services.category_service import (
+    get_all_categories,
 )
 
 from services.transaction_service import (
@@ -47,12 +49,50 @@ show_app_header(
 
 
 # =========================================================
+# HELPERS
+# =========================================================
+
+def decimal_value(value) -> Decimal:
+    """
+    Safely convert a value to Decimal.
+
+    Financial calculations always remain Decimal-based.
+    """
+
+    if value is None:
+        return Decimal("0.00")
+
+    try:
+
+        result = Decimal(
+            str(value)
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        return Decimal("0.00")
+
+    if not result.is_finite():
+
+        return Decimal("0.00")
+
+    return result
+
+
+def format_inr(value) -> str:
+    """Format a Decimal-compatible value as INR."""
+
+    return f"₹{decimal_value(value):,.2f}"
+
+
+# =========================================================
 # DATE RANGE
 # =========================================================
 
 st.markdown("## 📅 Reporting Period")
 
 today = date.today()
+
 
 period = st.selectbox(
     "Select Period",
@@ -69,13 +109,22 @@ period = st.selectbox(
 
 if period == "This Month":
 
-    start_date = today.replace(day=1)
+    start_date = today.replace(
+        day=1
+    )
+
     end_date = today
+
 
 elif period == "Last 30 Days":
 
-    start_date = today - timedelta(days=29)
+    start_date = (
+        today
+        - timedelta(days=29)
+    )
+
     end_date = today
+
 
 elif period == "This Year":
 
@@ -83,24 +132,36 @@ elif period == "This Year":
         month=1,
         day=1,
     )
+
     end_date = today
+
 
 elif period == "All Time":
 
-    start_date = date(2000, 1, 1)
+    start_date = date(
+        2000,
+        1,
+        1,
+    )
+
     end_date = today
+
 
 else:
 
     custom_col1, custom_col2 = st.columns(2)
 
+
     with custom_col1:
 
         start_date = st.date_input(
             "Start Date",
-            value=today.replace(day=1),
+            value=today.replace(
+                day=1
+            ),
             max_value=today,
         )
+
 
     with custom_col2:
 
@@ -109,6 +170,7 @@ else:
             value=today,
             max_value=today,
         )
+
 
     if start_date > end_date:
 
@@ -141,13 +203,17 @@ try:
         person_ids=None,
     )
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        f"Unable to load transactions.\n\n{exc}"
+        "Unable to load transactions for this report. "
+        "Please try again."
     )
 
     st.stop()
+
+
+transactions = transactions or []
 
 
 # =========================================================
@@ -156,22 +222,25 @@ except Exception as exc:
 
 try:
 
-    category_response = (
-        get_table("categories")
-        .select("*")
-        .execute()
-    )
-
-    categories = category_response.data or []
+    categories = get_all_categories()
 
 except Exception:
 
-    categories = []
+    st.error(
+        "Categories could not be loaded. "
+        "Please try again."
+    )
+
+    st.stop()
+
+
+categories = categories or []
 
 
 category_map = {
     category["id"]: category["name"]
     for category in categories
+    if category.get("id")
 }
 
 
@@ -183,13 +252,17 @@ try:
 
     account_balances = get_all_account_balances()
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        f"Unable to load account balances.\n\n{exc}"
+        "Account balances could not be loaded. "
+        "Please try again."
     )
 
     st.stop()
+
+
+account_balances = account_balances or []
 
 
 # =========================================================
@@ -206,6 +279,7 @@ if not transactions:
         "Add some transactions to unlock your financial analytics."
     )
 
+
     if st.button(
         "➕ Add Transaction",
         use_container_width=True,
@@ -216,18 +290,8 @@ if not transactions:
             "pages/Add_transaction.py"
         )
 
+
     st.stop()
-
-
-# =========================================================
-# DECIMAL HELPERS
-# =========================================================
-
-def decimal_value(value) -> Decimal:
-
-    return Decimal(
-        str(value or "0.00")
-    )
 
 
 # =========================================================
@@ -244,6 +308,10 @@ friend_money_received_total = Decimal("0.00")
 
 friend_money_returned_total = Decimal("0.00")
 
+friend_money_lent_total = Decimal("0.00")
+
+friend_money_lent_returned_total = Decimal("0.00")
+
 savings_contribution_total = Decimal("0.00")
 
 
@@ -253,34 +321,62 @@ for transaction in transactions:
         "transaction_type"
     )
 
+
     amount = decimal_value(
         transaction.get("amount")
     )
+
 
     if transaction_type == "income":
 
         income_total += amount
 
+
     elif transaction_type == "expense":
 
         expense_total += amount
+
 
     elif transaction_type == "internal_transfer":
 
         transfer_total += amount
 
+
     elif transaction_type == "friend_money_received":
 
         friend_money_received_total += amount
+
 
     elif transaction_type == "friend_money_returned":
 
         friend_money_returned_total += amount
 
+
+    elif transaction_type == "friend_money_lent":
+
+        friend_money_lent_total += amount
+
+
+    elif transaction_type == "friend_money_lent_returned":
+
+        friend_money_lent_returned_total += amount
+
+
     elif transaction_type == "savings_goal_contribution":
 
         savings_contribution_total += amount
 
+
+# ---------------------------------------------------------
+# IMPORTANT FINANCIAL RULE
+# ---------------------------------------------------------
+#
+# Net Savings = Income - ordinary Expenses.
+#
+# Internal transfers, friend-money movements, money lent,
+# money-lent returns, and savings-goal contributions are
+# intentionally not treated as ordinary income/expense.
+# ---------------------------------------------------------
 
 net_savings = (
     income_total
@@ -302,7 +398,7 @@ with summary1:
 
     st.metric(
         "Income",
-        f"₹{income_total:,.2f}",
+        format_inr(income_total),
     )
 
 
@@ -310,7 +406,7 @@ with summary2:
 
     st.metric(
         "Expenses",
-        f"₹{expense_total:,.2f}",
+        format_inr(expense_total),
     )
 
 
@@ -318,7 +414,7 @@ with summary3:
 
     st.metric(
         "Net Savings",
-        f"₹{net_savings:,.2f}",
+        format_inr(net_savings),
     )
 
 
@@ -402,18 +498,22 @@ for transaction in transactions:
 
         continue
 
+
     category_id = transaction.get(
         "category_id"
     )
+
 
     category_name = category_map.get(
         category_id,
         "Uncategorized",
     )
 
+
     amount = decimal_value(
         transaction.get("amount")
     )
+
 
     category_totals[
         category_name
@@ -428,6 +528,7 @@ if category_totals:
                 "Category": category,
                 "Amount": float(amount),
             }
+
             for category, amount
             in category_totals.items()
         ]
@@ -465,8 +566,7 @@ if category_totals:
 else:
 
     st.info(
-        "No expenses with category data "
-        "were found in this period."
+        "No expenses were found in this period."
     )
 
 
@@ -490,20 +590,24 @@ for transaction in transactions:
 
         continue
 
+
     transaction_date = transaction.get(
         "transaction_date"
     )
+
 
     if not transaction_date:
 
         continue
 
+
     amount = decimal_value(
         transaction.get("amount")
     )
 
+
     daily_expenses[
-        transaction_date
+        str(transaction_date)[:10]
     ] += amount
 
 
@@ -515,8 +619,11 @@ if daily_expenses:
                 "Date": transaction_date,
                 "Expense": float(amount),
             }
+
             for transaction_date, amount
-            in sorted(daily_expenses.items())
+            in sorted(
+                daily_expenses.items()
+            )
         ]
     )
 
@@ -583,6 +690,7 @@ for transaction in transactions:
         "transaction_type"
     )
 
+
     if transaction_type not in (
         "income",
         "expense",
@@ -590,21 +698,26 @@ for transaction in transactions:
 
         continue
 
+
     transaction_date = transaction.get(
         "transaction_date"
     )
+
 
     if not transaction_date:
 
         continue
 
+
     month_key = str(
         transaction_date
     )[:7]
 
+
     amount = decimal_value(
         transaction.get("amount")
     )
+
 
     monthly_data[
         month_key
@@ -614,6 +727,7 @@ for transaction in transactions:
 if monthly_data:
 
     monthly_rows = []
+
 
     for month, values in sorted(
         monthly_data.items()
@@ -696,6 +810,7 @@ if account_balances:
 
     account_rows = []
 
+
     for account in account_balances:
 
         account_name = account.get(
@@ -705,6 +820,7 @@ if account_balances:
                 "Account",
             ),
         )
+
 
         balance = decimal_value(
             account.get(
@@ -716,6 +832,7 @@ if account_balances:
             )
         )
 
+
         account_rows.append(
             {
                 "Account": account_name,
@@ -724,35 +841,43 @@ if account_balances:
         )
 
 
-    account_df = pd.DataFrame(
-        account_rows
-    )
+    if account_rows:
+
+        account_df = pd.DataFrame(
+            account_rows
+        )
 
 
-    fig_accounts = px.bar(
-        account_df,
-        x="Account",
-        y="Balance",
-        text="Balance",
-        title="Current Account Balances",
-    )
+        fig_accounts = px.bar(
+            account_df,
+            x="Account",
+            y="Balance",
+            text="Balance",
+            title="Current Account Balances",
+        )
 
 
-    fig_accounts.update_traces(
-        texttemplate="₹%{text:,.2f}",
-        textposition="outside",
-    )
+        fig_accounts.update_traces(
+            texttemplate="₹%{text:,.2f}",
+            textposition="outside",
+        )
 
 
-    fig_accounts.update_layout(
-        yaxis_title="Balance (₹)",
-        xaxis_title="",
-    )
+        fig_accounts.update_layout(
+            yaxis_title="Balance (₹)",
+            xaxis_title="",
+        )
 
 
-    st.plotly_chart(
-        fig_accounts,
-        use_container_width=True,
+        st.plotly_chart(
+            fig_accounts,
+            use_container_width=True,
+        )
+
+else:
+
+    st.info(
+        "No account balances are available."
     )
 
 
@@ -786,13 +911,16 @@ for transaction in transactions:
 
         continue
 
+
     payment_method = transaction.get(
         "payment_method"
     )
 
+
     if not payment_method:
 
         payment_method = "other"
+
 
     payment_totals[
         payment_method
@@ -808,13 +936,16 @@ if payment_totals:
             {
                 "Payment Method": payment_labels.get(
                     method,
-                    method.replace(
+                    str(method)
+                    .replace(
                         "_",
                         " ",
-                    ).title(),
+                    )
+                    .title(),
                 ),
                 "Amount": float(amount),
             }
+
             for method, amount
             in payment_totals.items()
         ]
@@ -849,8 +980,8 @@ if payment_totals:
 else:
 
     st.info(
-        "No categorized payment-method expenses "
-        "were found in this period."
+        "No expense payment-method data was found "
+        "in this period."
     )
 
 
@@ -868,7 +999,7 @@ with activity_col1:
 
     st.metric(
         "Internal Transfers",
-        f"₹{transfer_total:,.2f}",
+        format_inr(transfer_total),
     )
 
 
@@ -876,7 +1007,9 @@ with activity_col2:
 
     st.metric(
         "Friend Money Received",
-        f"₹{friend_money_received_total:,.2f}",
+        format_inr(
+            friend_money_received_total
+        ),
     )
 
 
@@ -884,7 +1017,49 @@ with activity_col3:
 
     st.metric(
         "Friend Money Returned",
-        f"₹{friend_money_returned_total:,.2f}",
+        format_inr(
+            friend_money_returned_total
+        ),
+    )
+
+
+# =========================================================
+# ADDITIONAL FINANCIAL MOVEMENTS
+# =========================================================
+
+st.markdown("### 🔄 Other Financial Movements")
+
+
+movement_col1, movement_col2, movement_col3 = st.columns(3)
+
+
+with movement_col1:
+
+    st.metric(
+        "Savings Contributions",
+        format_inr(
+            savings_contribution_total
+        ),
+    )
+
+
+with movement_col2:
+
+    st.metric(
+        "Money Lent",
+        format_inr(
+            friend_money_lent_total
+        ),
+    )
+
+
+with movement_col3:
+
+    st.metric(
+        "Money Lent Returned",
+        format_inr(
+            friend_money_lent_returned_total
+        ),
     )
 
 
@@ -892,7 +1067,7 @@ st.divider()
 
 
 # =========================================================
-# REPORT NOTE
+# REPORT NOTES
 # =========================================================
 
 st.caption(
@@ -900,10 +1075,19 @@ st.caption(
     "included in income, expenses, or net savings."
 )
 
+
 st.caption(
     "ℹ️ Friend-money transactions are tracked separately "
     "because they do not represent personal income or spending."
 )
+
+
+st.caption(
+    "ℹ️ Savings contributions are tracked separately from "
+    "ordinary expenses because they represent money allocated "
+    "toward a savings goal."
+)
+
 
 st.caption(
     "🔒 Financial calculations use Decimal values; "

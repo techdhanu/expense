@@ -8,7 +8,9 @@ from components.navigation import (
     show_app_header,
 )
 
-from services.category_service import get_all_categories
+from services.category_service import (
+    get_all_categories,
+)
 
 from services.account_service import (
     get_all_accounts,
@@ -26,9 +28,9 @@ from services.transaction_service import (
 # =========================================================
 
 setup_page(
-    "Add Transaction",
-    "➕",
-    "wide",
+    title="Add Transaction",
+    icon="➕",
+    layout="wide",
 )
 
 require_login()
@@ -49,13 +51,22 @@ show_app_header(
 # =========================================================
 
 try:
+
     accounts = get_all_accounts()
-except Exception as exc:
+
+except Exception:
+
     st.error(
-        f"Unable to load accounts.\n\n{exc}"
+        "Unable to load accounts. "
+        "Please try again."
     )
+
     st.stop()
 
+
+# =========================================================
+# ACCOUNT AVAILABILITY
+# =========================================================
 
 if not accounts:
 
@@ -69,6 +80,7 @@ if not accounts:
         use_container_width=True,
         type="primary",
     ):
+
         st.switch_page(
             "pages/accounts.py"
         )
@@ -76,11 +88,14 @@ if not accounts:
     st.stop()
 
 
+# =========================================================
+# ACCOUNT MAP
+# =========================================================
+
 account_map = {
     account["name"]: account["id"]
     for account in accounts
 }
-
 
 account_names = list(account_map.keys())
 
@@ -93,15 +108,18 @@ try:
 
     categories = get_all_categories()
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        f"Unable to load categories.\n\n{exc}"
+        "Unable to load categories. "
+        "Please try again."
     )
 
-    categories = []
+    st.stop()
+
+
 # =========================================================
-# LOAD PAYMENT METHODS
+# PAYMENT METHODS
 # =========================================================
 
 PAYMENT_METHODS = {
@@ -130,13 +148,17 @@ transaction_type_label = st.radio(
     horizontal=True,
 )
 
+
 if transaction_type_label == "🟢 Income":
+
     transaction_type = "income"
 
 elif transaction_type_label == "🔴 Expense":
+
     transaction_type = "expense"
 
 else:
+
     transaction_type = "internal_transfer"
 
 
@@ -151,6 +173,7 @@ st.markdown("### 📅 Transaction Details")
 
 col1, col2 = st.columns(2)
 
+
 with col1:
 
     transaction_date = st.date_input(
@@ -158,6 +181,7 @@ with col1:
         value=date.today(),
         max_value=date.today(),
     )
+
 
 with col2:
 
@@ -183,7 +207,7 @@ if transaction_type in (
         "Account",
         options=account_names,
         help=(
-            "Select the account where the money was received "
+            "Select the account where the money was received."
             if transaction_type == "income"
             else
             "Select the account from which the money was spent."
@@ -195,9 +219,9 @@ if transaction_type in (
     ]
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # CATEGORY
-    # -----------------------------------------------------
+    # =====================================================
 
     if transaction_type == "income":
 
@@ -232,7 +256,10 @@ if transaction_type in (
 
         selected_category_name = st.selectbox(
             category_label,
-            options=["No Category"] + category_names,
+            options=[
+                "No Category",
+                *category_names,
+            ],
         )
 
         if selected_category_name == "No Category":
@@ -244,8 +271,7 @@ if transaction_type in (
             selected_category_id = next(
                 category["id"]
                 for category in category_options
-                if category["name"]
-                == selected_category_name
+                if category["name"] == selected_category_name
             )
 
     else:
@@ -258,9 +284,9 @@ if transaction_type in (
         selected_category_id = None
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # PAYMENT METHOD
-    # -----------------------------------------------------
+    # =====================================================
 
     selected_payment_method_label = st.selectbox(
         "Payment Method",
@@ -269,6 +295,7 @@ if transaction_type in (
             *PAYMENT_METHODS.keys(),
         ],
     )
+
 
     if selected_payment_method_label == "Not Specified":
 
@@ -291,6 +318,7 @@ else:
 
     col1, col2 = st.columns(2)
 
+
     with col1:
 
         from_account_name = st.selectbox(
@@ -299,6 +327,7 @@ else:
             key="transfer_from_account",
         )
 
+
     with col2:
 
         to_account_options = [
@@ -306,6 +335,7 @@ else:
             for name in account_names
             if name != from_account_name
         ]
+
 
         if not to_account_options:
 
@@ -316,11 +346,13 @@ else:
 
             st.stop()
 
+
         to_account_name = st.selectbox(
             "To Account",
             options=to_account_options,
             key="transfer_to_account",
         )
+
 
     from_account_id = account_map[
         from_account_name
@@ -351,6 +383,7 @@ description = st.text_input(
     max_chars=200,
 )
 
+
 notes = st.text_area(
     "Notes",
     placeholder="Optional additional details...",
@@ -368,6 +401,7 @@ st.divider()
 st.markdown("### 🔎 Review")
 
 review_col1, review_col2 = st.columns(2)
+
 
 with review_col1:
 
@@ -435,6 +469,7 @@ if submit_button:
     # -----------------------------------------------------
 
     amount_clean = amount_text.strip()
+
 
     if not amount_clean:
 
@@ -508,7 +543,6 @@ if submit_button:
                 notes=notes_clean,
             )
 
-
             st.success(
                 f"Income of ₹{amount:,.2f} "
                 f"was recorded successfully."
@@ -531,7 +565,6 @@ if submit_button:
                 notes=notes_clean,
             )
 
-
             st.success(
                 f"Expense of ₹{amount:,.2f} "
                 f"was recorded successfully."
@@ -552,7 +585,6 @@ if submit_button:
                 description=description_clean,
                 notes=notes_clean,
             )
-
 
             st.success(
                 f"₹{amount:,.2f} transferred successfully "
@@ -580,6 +612,7 @@ if submit_button:
 
         next_col1, next_col2 = st.columns(2)
 
+
         with next_col1:
 
             if st.button(
@@ -602,8 +635,9 @@ if submit_button:
                 )
 
 
-    except Exception as exc:
+    except Exception:
 
         st.error(
-            f"Transaction could not be saved.\n\n{exc}"
+            "Transaction could not be saved. "
+            "Please check the details and try again."
         )

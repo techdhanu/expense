@@ -1,10 +1,19 @@
-
 -- ============================================================
 -- PERSONAL EXPENSE TRACKER
--- Supabase PostgreSQL Database Schema
+-- Enterprise Multi-User Supabase PostgreSQL Database Schema
+-- Canonical source schema
 -- ============================================================
 
--- Required extension for UUID generation
+-- IMPORTANT:
+-- This file describes the target/final database architecture.
+-- It is NOT a migration for an already-populated production database.
+-- Run this file only when creating a fresh database.
+-- Existing production data should be upgraded with a separate migration.
+
+-- ============================================================
+-- REQUIRED EXTENSION
+-- ============================================================
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 
@@ -15,15 +24,22 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS app_users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    username VARCHAR(100) NOT NULL UNIQUE,
+    username VARCHAR(100) NOT NULL,
 
     password_hash TEXT NOT NULL,
 
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT app_users_username_not_empty
+        CHECK (length(trim(username)) > 0)
 );
+
+-- Username matching is case-insensitive.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_username_unique
+    ON app_users (lower(username));
 
 
 -- ============================================================
@@ -33,7 +49,9 @@ CREATE TABLE IF NOT EXISTS app_users (
 CREATE TABLE IF NOT EXISTS accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    name VARCHAR(100) NOT NULL UNIQUE,
+    user_id UUID NOT NULL,
+
+    name VARCHAR(100) NOT NULL,
 
     account_type VARCHAR(50) NOT NULL DEFAULT 'bank',
 
@@ -43,6 +61,11 @@ CREATE TABLE IF NOT EXISTS accounts (
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT accounts_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT accounts_opening_balance_non_negative
         CHECK (opening_balance >= 0),
@@ -54,8 +77,20 @@ CREATE TABLE IF NOT EXISTS accounts (
                 'cash',
                 'other'
             )
-        )
+        ),
+
+    CONSTRAINT accounts_user_id_unique
+        UNIQUE (user_id, id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_name_unique
+    ON accounts (user_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_id
+    ON accounts(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_active
+    ON accounts(user_id, is_active);
 
 
 -- ============================================================
@@ -64,6 +99,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE TABLE IF NOT EXISTS categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     name VARCHAR(100) NOT NULL,
 
@@ -74,6 +111,11 @@ CREATE TABLE IF NOT EXISTS categories (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT categories_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT categories_type_valid
         CHECK (
             category_type IN (
@@ -82,9 +124,18 @@ CREATE TABLE IF NOT EXISTS categories (
             )
         ),
 
-    CONSTRAINT categories_unique_name_type
-        UNIQUE (name, category_type)
+    CONSTRAINT categories_user_id_unique
+        UNIQUE (user_id, id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_user_name_type_unique
+    ON categories(user_id, name, category_type);
+
+CREATE INDEX IF NOT EXISTS idx_categories_user_id
+    ON categories(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_categories_user_type
+    ON categories(user_id, category_type);
 
 
 -- ============================================================
@@ -94,13 +145,32 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS people (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    name VARCHAR(150) NOT NULL UNIQUE,
+    user_id UUID NOT NULL,
+
+    name VARCHAR(150) NOT NULL,
 
     notes TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT people_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT people_name_not_empty
+        CHECK (length(trim(name)) > 0),
+
+    CONSTRAINT people_user_id_unique
+        UNIQUE (user_id, id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_people_user_name_unique
+    ON people(user_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_people_user_id
+    ON people(user_id);
 
 
 -- ============================================================
@@ -109,6 +179,8 @@ CREATE TABLE IF NOT EXISTS people (
 
 CREATE TABLE IF NOT EXISTS transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     transaction_date DATE NOT NULL,
 
@@ -133,23 +205,28 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT transactions_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT transactions_amount_positive
         CHECK (amount > 0),
 
     CONSTRAINT transactions_type_valid
-CHECK (
-    transaction_type IN (
-        'income',
-        'expense',
-        'internal_transfer',
-        'friend_money_received',
-        'friend_money_returned',
-        'friend_money_lent',
-        'friend_money_lent_returned',
-        'balance_adjustment',
-        'savings_goal_contribution'
-    )
-),
+        CHECK (
+            transaction_type IN (
+                'income',
+                'expense',
+                'internal_transfer',
+                'friend_money_received',
+                'friend_money_returned',
+                'friend_money_lent',
+                'friend_money_lent_returned',
+                'balance_adjustment',
+                'savings_goal_contribution'
+            )
+        ),
 
     CONSTRAINT transactions_payment_method_valid
         CHECK (
@@ -171,26 +248,47 @@ CHECK (
             OR source_account_id <> destination_account_id
         ),
 
+    CONSTRAINT transactions_user_id_unique
+        UNIQUE (user_id, id),
+
     CONSTRAINT transactions_source_account_fk
-        FOREIGN KEY (source_account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, source_account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT transactions_destination_account_fk
-        FOREIGN KEY (destination_account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, destination_account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT transactions_category_fk
-        FOREIGN KEY (category_id)
-        REFERENCES categories(id)
+        FOREIGN KEY (user_id, category_id)
+        REFERENCES categories(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT transactions_person_fk
-        FOREIGN KEY (person_id)
-        REFERENCES people(id)
+        FOREIGN KEY (user_id, person_id)
+        REFERENCES people(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_id
+    ON transactions(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_date
+    ON transactions(user_id, transaction_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_type
+    ON transactions(user_id, transaction_type);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_category
+    ON transactions(user_id, category_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_source_account
+    ON transactions(user_id, source_account_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_user_person
+    ON transactions(user_id, person_id);
 
 
 -- ============================================================
@@ -199,6 +297,8 @@ CHECK (
 
 CREATE TABLE IF NOT EXISTS transfers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     transaction_id UUID NOT NULL UNIQUE,
 
@@ -215,6 +315,11 @@ CREATE TABLE IF NOT EXISTS transfers (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT transfers_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT transfers_amount_positive
         CHECK (amount > 0),
 
@@ -222,20 +327,26 @@ CREATE TABLE IF NOT EXISTS transfers (
         CHECK (from_account_id <> to_account_id),
 
     CONSTRAINT transfers_transaction_fk
-        FOREIGN KEY (transaction_id)
-        REFERENCES transactions(id)
+        FOREIGN KEY (user_id, transaction_id)
+        REFERENCES transactions(user_id, id)
         ON DELETE CASCADE,
 
     CONSTRAINT transfers_from_account_fk
-        FOREIGN KEY (from_account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, from_account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT transfers_to_account_fk
-        FOREIGN KEY (to_account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, to_account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_transfers_user_id
+    ON transfers(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_transfers_user_date
+    ON transfers(user_id, transfer_date DESC);
 
 
 -- ============================================================
@@ -244,6 +355,8 @@ CREATE TABLE IF NOT EXISTS transfers (
 
 CREATE TABLE IF NOT EXISTS friends_money (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     person_id UUID NOT NULL,
 
@@ -266,6 +379,11 @@ CREATE TABLE IF NOT EXISTS friends_money (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT friends_money_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT friends_money_received_non_negative
         CHECK (amount_received >= 0),
 
@@ -285,20 +403,32 @@ CREATE TABLE IF NOT EXISTS friends_money (
         ),
 
     CONSTRAINT friends_money_person_fk
-        FOREIGN KEY (person_id)
-        REFERENCES people(id)
+        FOREIGN KEY (user_id, person_id)
+        REFERENCES people(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT friends_money_transaction_fk
-        FOREIGN KEY (transaction_id)
-        REFERENCES transactions(id)
+        FOREIGN KEY (user_id, transaction_id)
+        REFERENCES transactions(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT friends_money_account_fk
-        FOREIGN KEY (account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_friends_money_user_id
+    ON friends_money(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_friends_money_user_person
+    ON friends_money(user_id, person_id);
+
+CREATE INDEX IF NOT EXISTS idx_friends_money_user_status
+    ON friends_money(user_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_friends_money_user_date
+    ON friends_money(user_id, received_date DESC);
 
 
 -- ============================================================
@@ -307,6 +437,8 @@ CREATE TABLE IF NOT EXISTS friends_money (
 
 CREATE TABLE IF NOT EXISTS budgets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     category_id UUID NOT NULL,
 
@@ -319,6 +451,11 @@ CREATE TABLE IF NOT EXISTS budgets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT budgets_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT budgets_month_valid
         CHECK (budget_month BETWEEN 1 AND 12),
 
@@ -329,17 +466,24 @@ CREATE TABLE IF NOT EXISTS budgets (
         CHECK (budget_amount > 0),
 
     CONSTRAINT budgets_category_fk
-        FOREIGN KEY (category_id)
-        REFERENCES categories(id)
+        FOREIGN KEY (user_id, category_id)
+        REFERENCES categories(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT budgets_unique_category_month
         UNIQUE (
+            user_id,
             category_id,
             budget_month,
             budget_year
         )
 );
+
+CREATE INDEX IF NOT EXISTS idx_budgets_user_id
+    ON budgets(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_budgets_user_period
+    ON budgets(user_id, budget_year DESC, budget_month DESC);
 
 
 -- ============================================================
@@ -348,6 +492,8 @@ CREATE TABLE IF NOT EXISTS budgets (
 
 CREATE TABLE IF NOT EXISTS savings_goals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     name VARCHAR(150) NOT NULL,
 
@@ -362,6 +508,14 @@ CREATE TABLE IF NOT EXISTS savings_goals (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT savings_goals_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT savings_goals_name_not_empty
+        CHECK (length(trim(name)) > 0),
+
     CONSTRAINT savings_goals_target_positive
         CHECK (target_amount > 0),
 
@@ -372,8 +526,17 @@ CREATE TABLE IF NOT EXISTS savings_goals (
                 'completed',
                 'cancelled'
             )
-        )
+        ),
+
+    CONSTRAINT savings_goals_user_id_unique
+        UNIQUE (user_id, id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_savings_goals_user_id
+    ON savings_goals(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_savings_goals_user_status
+    ON savings_goals(user_id, status);
 
 
 -- ============================================================
@@ -383,9 +546,11 @@ CREATE TABLE IF NOT EXISTS savings_goals (
 CREATE TABLE IF NOT EXISTS savings_contributions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
+    user_id UUID NOT NULL,
+
     savings_goal_id UUID NOT NULL,
 
-    transaction_id UUID,
+    transaction_id UUID NOT NULL,
 
     account_id UUID NOT NULL,
 
@@ -398,24 +563,38 @@ CREATE TABLE IF NOT EXISTS savings_contributions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT savings_contributions_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
     CONSTRAINT savings_contributions_amount_positive
         CHECK (amount > 0),
 
     CONSTRAINT savings_contributions_goal_fk
-        FOREIGN KEY (savings_goal_id)
-        REFERENCES savings_goals(id)
+        FOREIGN KEY (user_id, savings_goal_id)
+        REFERENCES savings_goals(user_id, id)
         ON DELETE CASCADE,
 
     CONSTRAINT savings_contributions_transaction_fk
-        FOREIGN KEY (transaction_id)
-        REFERENCES transactions(id)
+        FOREIGN KEY (user_id, transaction_id)
+        REFERENCES transactions(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT savings_contributions_account_fk
-        FOREIGN KEY (account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_savings_contributions_user_id
+    ON savings_contributions(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_savings_contributions_user_goal
+    ON savings_contributions(user_id, savings_goal_id);
+
+CREATE INDEX IF NOT EXISTS idx_savings_contributions_user_date
+    ON savings_contributions(user_id, contribution_date DESC);
 
 
 -- ============================================================
@@ -424,6 +603,8 @@ CREATE TABLE IF NOT EXISTS savings_contributions (
 
 CREATE TABLE IF NOT EXISTS recurring_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     transaction_name VARCHAR(150) NOT NULL,
 
@@ -454,6 +635,14 @@ CREATE TABLE IF NOT EXISTS recurring_transactions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    CONSTRAINT recurring_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT recurring_name_not_empty
+        CHECK (length(trim(transaction_name)) > 0),
+
     CONSTRAINT recurring_amount_positive
         CHECK (amount > 0),
 
@@ -476,6 +665,19 @@ CREATE TABLE IF NOT EXISTS recurring_transactions (
             )
         ),
 
+    CONSTRAINT recurring_payment_method_valid
+        CHECK (
+            payment_method IS NULL
+            OR payment_method IN (
+                'upi',
+                'debit_card',
+                'bank_transfer',
+                'cash',
+                'auto_debit',
+                'other'
+            )
+        ),
+
     CONSTRAINT recurring_source_destination_different
         CHECK (
             account_id IS NULL
@@ -484,20 +686,29 @@ CREATE TABLE IF NOT EXISTS recurring_transactions (
         ),
 
     CONSTRAINT recurring_account_fk
-        FOREIGN KEY (account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT recurring_destination_account_fk
-        FOREIGN KEY (destination_account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, destination_account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT recurring_category_fk
-        FOREIGN KEY (category_id)
-        REFERENCES categories(id)
+        FOREIGN KEY (user_id, category_id)
+        REFERENCES categories(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_recurring_user_id
+    ON recurring_transactions(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_recurring_user_due
+    ON recurring_transactions(user_id, next_due_date);
+
+CREATE INDEX IF NOT EXISTS idx_recurring_user_active
+    ON recurring_transactions(user_id, is_active);
 
 
 -- ============================================================
@@ -506,6 +717,8 @@ CREATE TABLE IF NOT EXISTS recurring_transactions (
 
 CREATE TABLE IF NOT EXISTS backup_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     backup_type VARCHAR(20) NOT NULL,
 
@@ -516,6 +729,11 @@ CREATE TABLE IF NOT EXISTS backup_history (
     record_count INTEGER NOT NULL DEFAULT 0,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT backup_history_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT backup_type_valid
         CHECK (
@@ -529,6 +747,12 @@ CREATE TABLE IF NOT EXISTS backup_history (
         CHECK (record_count >= 0)
 );
 
+CREATE INDEX IF NOT EXISTS idx_backup_history_user_id
+    ON backup_history(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_backup_history_user_date
+    ON backup_history(user_id, created_at DESC);
+
 
 -- ============================================================
 -- 13. APP SETTINGS
@@ -537,326 +761,36 @@ CREATE TABLE IF NOT EXISTS backup_history (
 CREATE TABLE IF NOT EXISTS app_settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    setting_key VARCHAR(100) NOT NULL UNIQUE,
+    user_id UUID NOT NULL,
+
+    setting_key VARCHAR(100) NOT NULL,
 
     setting_value TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT app_settings_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE
 );
 
--- ============================================================
--- ATOMIC JSON BACKUP RESTORE
--- ============================================================
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_settings_user_key_unique
+    ON app_settings(user_id, setting_key);
 
-create or replace function restore_expense_tracker_backup(backup_data jsonb)
-returns jsonb
-language plpgsql
-security definer
-as $$
-declare
-    table_name text;
-    records jsonb;
-    restored_counts jsonb := '{}'::jsonb;
-    record_count integer;
-begin
-    -- Validate top-level structure
-    if backup_data->>'backup_version' is null then
-        raise exception 'Backup version is missing.';
-    end if;
+CREATE INDEX IF NOT EXISTS idx_app_settings_user_id
+    ON app_settings(user_id);
 
-    if backup_data->'tables' is null
-       or jsonb_typeof(backup_data->'tables') <> 'object' then
-        raise exception 'Backup does not contain valid table data.';
-    end if;
-
-    -- Restore in foreign-key-safe order.
-    -- PostgreSQL automatically rolls back the entire function
-    -- if any statement raises an exception.
-
-    -- app_users
-    records := backup_data->'tables'->'app_users';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into app_users
-        select *
-        from jsonb_populate_recordset(null::app_users, records)
-        on conflict (id) do update set
-            username = excluded.username,
-            password_hash = excluded.password_hash,
-            is_active = excluded.is_active,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('app_users', record_count);
-
-    -- accounts
-    records := backup_data->'tables'->'accounts';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into accounts
-        select *
-        from jsonb_populate_recordset(null::accounts, records)
-        on conflict (id) do update set
-            name = excluded.name,
-            account_type = excluded.account_type,
-            opening_balance = excluded.opening_balance,
-            is_active = excluded.is_active,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('accounts', record_count);
-
-    -- categories
-    records := backup_data->'tables'->'categories';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into categories
-        select *
-        from jsonb_populate_recordset(null::categories, records)
-        on conflict (id) do update set
-            name = excluded.name,
-            category_type = excluded.category_type,
-            is_active = excluded.is_active,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('categories', record_count);
-
-    -- people
-    records := backup_data->'tables'->'people';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into people
-        select *
-        from jsonb_populate_recordset(null::people, records)
-        on conflict (id) do update set
-            name = excluded.name,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('people', record_count);
-
-    -- transactions
-    records := backup_data->'tables'->'transactions';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into transactions
-        select *
-        from jsonb_populate_recordset(null::transactions, records)
-        on conflict (id) do update set
-            transaction_date = excluded.transaction_date,
-            transaction_type = excluded.transaction_type,
-            amount = excluded.amount,
-            source_account_id = excluded.source_account_id,
-            destination_account_id = excluded.destination_account_id,
-            category_id = excluded.category_id,
-            person_id = excluded.person_id,
-            payment_method = excluded.payment_method,
-            description = excluded.description,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('transactions', record_count);
-
-    -- transfers
-    records := backup_data->'tables'->'transfers';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into transfers
-        select *
-        from jsonb_populate_recordset(null::transfers, records)
-        on conflict (id) do update set
-            transaction_id = excluded.transaction_id,
-            from_account_id = excluded.from_account_id,
-            to_account_id = excluded.to_account_id,
-            amount = excluded.amount,
-            transfer_date = excluded.transfer_date,
-            description = excluded.description,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('transfers', record_count);
-
-    -- friends_money
-    records := backup_data->'tables'->'friends_money';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into friends_money
-        select *
-        from jsonb_populate_recordset(null::friends_money, records)
-        on conflict (id) do update set
-            person_id = excluded.person_id,
-            transaction_id = excluded.transaction_id,
-            account_id = excluded.account_id,
-            amount_received = excluded.amount_received,
-            amount_returned = excluded.amount_returned,
-            received_date = excluded.received_date,
-            expected_return_date = excluded.expected_return_date,
-            status = excluded.status,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('friends_money', record_count);
-
-    -- budgets
-    records := backup_data->'tables'->'budgets';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into budgets
-        select *
-        from jsonb_populate_recordset(null::budgets, records)
-        on conflict (id) do update set
-            category_id = excluded.category_id,
-            budget_month = excluded.budget_month,
-            budget_year = excluded.budget_year,
-            budget_amount = excluded.budget_amount,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('budgets', record_count);
-
-    -- savings_goals
-    records := backup_data->'tables'->'savings_goals';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into savings_goals
-        select *
-        from jsonb_populate_recordset(null::savings_goals, records)
-        on conflict (id) do update set
-            name = excluded.name,
-            target_amount = excluded.target_amount,
-            target_date = excluded.target_date,
-            status = excluded.status,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('savings_goals', record_count);
-
-    -- savings_contributions
-    records := backup_data->'tables'->'savings_contributions';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into savings_contributions
-        select *
-        from jsonb_populate_recordset(null::savings_contributions, records)
-        on conflict (id) do update set
-            savings_goal_id = excluded.savings_goal_id,
-            transaction_id = excluded.transaction_id,
-            account_id = excluded.account_id,
-            amount = excluded.amount,
-            contribution_date = excluded.contribution_date,
-            notes = excluded.notes;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('savings_contributions', record_count);
-
-    -- recurring_transactions
-    records := backup_data->'tables'->'recurring_transactions';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into recurring_transactions
-        select *
-        from jsonb_populate_recordset(null::recurring_transactions, records)
-        on conflict (id) do update set
-            transaction_name = excluded.transaction_name,
-            transaction_type = excluded.transaction_type,
-            amount = excluded.amount,
-            account_id = excluded.account_id,
-            destination_account_id = excluded.destination_account_id,
-            category_id = excluded.category_id,
-            payment_method = excluded.payment_method,
-            frequency = excluded.frequency,
-            start_date = excluded.start_date,
-            next_due_date = excluded.next_due_date,
-            auto_create = excluded.auto_create,
-            is_active = excluded.is_active,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('recurring_transactions', record_count);
-
-    -- backup_history
-    records := backup_data->'tables'->'backup_history';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into backup_history
-        select *
-        from jsonb_populate_recordset(null::backup_history, records)
-        on conflict (id) do update set
-            backup_type = excluded.backup_type,
-            backup_filename = excluded.backup_filename,
-            backup_version = excluded.backup_version,
-            record_count = excluded.record_count,
-            created_at = excluded.created_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('backup_history', record_count);
-
-    -- app_settings
-    records := backup_data->'tables'->'app_settings';
-    if records is not null and jsonb_array_length(records) > 0 then
-        insert into app_settings
-        select *
-        from jsonb_populate_recordset(null::app_settings, records)
-        on conflict (id) do update set
-            setting_key = excluded.setting_key,
-            setting_value = excluded.setting_value,
-            updated_at = excluded.updated_at;
-
-        get diagnostics record_count = row_count;
-    else
-        record_count := 0;
-    end if;
-    restored_counts := restored_counts || jsonb_build_object('app_settings', record_count);
-
-    return jsonb_build_object(
-        'backup_version', backup_data->>'backup_version',
-        'restored_counts', restored_counts,
-        'total_records',
-        (
-            select sum((value)::integer)
-            from jsonb_each_text(restored_counts)
-        )
-    );
-end;
-$$;
 
 -- ============================================================
--- 7B. MONEY LENT TO FRIENDS
+-- 14. MONEY LENT / RECEIVABLE
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS money_lent (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
 
     person_id UUID NOT NULL,
 
@@ -877,8 +811,12 @@ CREATE TABLE IF NOT EXISTS money_lent (
     notes TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT money_lent_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES app_users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT money_lent_amount_positive
         CHECK (amount_lent > 0),
@@ -899,32 +837,1138 @@ CREATE TABLE IF NOT EXISTS money_lent (
         ),
 
     CONSTRAINT money_lent_person_fk
-        FOREIGN KEY (person_id)
-        REFERENCES people(id)
+        FOREIGN KEY (user_id, person_id)
+        REFERENCES people(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT money_lent_transaction_fk
-        FOREIGN KEY (transaction_id)
-        REFERENCES transactions(id)
+        FOREIGN KEY (user_id, transaction_id)
+        REFERENCES transactions(user_id, id)
         ON DELETE RESTRICT,
 
     CONSTRAINT money_lent_account_fk
-        FOREIGN KEY (account_id)
-        REFERENCES accounts(id)
+        FOREIGN KEY (user_id, account_id)
+        REFERENCES accounts(user_id, id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_user_id
+    ON money_lent(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_user_person
+    ON money_lent(user_id, person_id);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_user_account
+    ON money_lent(user_id, account_id);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_user_status
+    ON money_lent(user_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_money_lent_user_date
+    ON money_lent(user_id, lent_date DESC);
+
+
 -- ============================================================
--- INDEXES FOR MONEY LENT
+-- 15. ROW LEVEL SECURITY
 -- ============================================================
 
-CREATE INDEX IF NOT EXISTS idx_money_lent_person
-    ON money_lent(person_id);
+-- The application currently uses custom app_users authentication
+-- and a server-side Supabase secret key.
+--
+-- RLS is enabled as defense-in-depth.
+-- The service key bypasses RLS, so application-level user_id
+-- scoping remains mandatory in every service/query.
 
-CREATE INDEX IF NOT EXISTS idx_money_lent_account
-    ON money_lent(account_id);
+ALTER TABLE app_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transfers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE friends_money ENABLE ROW LEVEL SECURITY;
+ALTER TABLE budgets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE savings_goals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE savings_contributions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recurring_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE money_lent ENABLE ROW LEVEL SECURITY;
 
-CREATE INDEX IF NOT EXISTS idx_money_lent_status
-    ON money_lent(status);
 
-CREATE INDEX IF NOT EXISTS idx_money_lent_lent_date
-    ON money_lent(lent_date);
+-- ============================================================
+-- 16. ATOMIC JSON BACKUP RESTORE
+-- ============================================================
+--
+-- Security model:
+--   1. Python supplies the authenticated application's user UUID.
+--   2. The backup's top-level user_id must equal that UUID.
+--   3. Every row in every restored table must contain the same user_id.
+--   4. app_users is NEVER restored.
+--   5. SECURITY DEFINER uses a fixed search_path.
+--   6. The function runs atomically: any exception rolls back
+--      the complete restore.
+--
+-- The Python backup service should call:
+--
+-- restore_expense_tracker_backup(backup_data, current_user_id)
+--
+-- where current_user_id comes from get_current_user_id().
+
+CREATE OR REPLACE FUNCTION restore_expense_tracker_backup(
+    backup_data JSONB,
+    p_user_id UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    records JSONB;
+    record_item JSONB;
+    restored_counts JSONB := '{}'::JSONB;
+    record_count INTEGER;
+    expected_user_id UUID;
+BEGIN
+
+    -- --------------------------------------------------------
+    -- Validate authenticated application user
+    -- --------------------------------------------------------
+
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'Current user ID is required.';
+    END IF;
+
+    SELECT id
+    INTO expected_user_id
+    FROM app_users
+    WHERE id = p_user_id
+      AND is_active = TRUE;
+
+    IF expected_user_id IS NULL THEN
+        RAISE EXCEPTION 'Current user does not exist or is inactive.';
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Validate backup structure
+    -- --------------------------------------------------------
+
+    IF backup_data IS NULL THEN
+        RAISE EXCEPTION 'Backup data is required.';
+    END IF;
+
+    IF backup_data->>'backup_version' IS NULL THEN
+        RAISE EXCEPTION 'Backup version is missing.';
+    END IF;
+
+    IF backup_data->'user_id' IS NULL THEN
+        RAISE EXCEPTION 'Backup user ID is missing.';
+    END IF;
+
+    IF (backup_data->>'user_id')::UUID <> p_user_id THEN
+        RAISE EXCEPTION 'Backup belongs to a different user.';
+    END IF;
+
+    IF backup_data->'tables' IS NULL
+       OR jsonb_typeof(backup_data->'tables') <> 'object' THEN
+        RAISE EXCEPTION 'Backup does not contain valid table data.';
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Helper validation:
+    -- every restored row must belong to p_user_id.
+    --
+    -- The explicit loops are intentionally repetitive because
+    -- this is security-sensitive database code.
+    -- --------------------------------------------------------
+
+
+    -- ========================================================
+    -- ACCOUNTS
+    -- ========================================================
+
+    records := backup_data->'tables'->'accounts';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid accounts backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Account record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO accounts (
+            id,
+            user_id,
+            name,
+            account_type,
+            opening_balance,
+            is_active,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            name,
+            account_type,
+            opening_balance,
+            is_active,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::accounts,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            name = EXCLUDED.name,
+            account_type = EXCLUDED.account_type,
+            opening_balance = EXCLUDED.opening_balance,
+            is_active = EXCLUDED.is_active,
+            updated_at = EXCLUDED.updated_at
+        WHERE accounts.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('accounts', record_count);
+
+
+    -- ========================================================
+    -- CATEGORIES
+    -- ========================================================
+
+    records := backup_data->'tables'->'categories';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid categories backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Category record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO categories (
+            id,
+            user_id,
+            name,
+            category_type,
+            is_active,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            name,
+            category_type,
+            is_active,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::categories,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            name = EXCLUDED.name,
+            category_type = EXCLUDED.category_type,
+            is_active = EXCLUDED.is_active,
+            updated_at = EXCLUDED.updated_at
+        WHERE categories.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('categories', record_count);
+
+
+    -- ========================================================
+    -- PEOPLE
+    -- ========================================================
+
+    records := backup_data->'tables'->'people';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid people backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'People record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO people (
+            id,
+            user_id,
+            name,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            name,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::people,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            name = EXCLUDED.name,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE people.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('people', record_count);
+
+
+    -- ========================================================
+    -- SAVINGS GOALS
+    -- ========================================================
+
+    records := backup_data->'tables'->'savings_goals';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid savings goals backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Savings goal belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO savings_goals (
+            id,
+            user_id,
+            name,
+            target_amount,
+            target_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            name,
+            target_amount,
+            target_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::savings_goals,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            name = EXCLUDED.name,
+            target_amount = EXCLUDED.target_amount,
+            target_date = EXCLUDED.target_date,
+            status = EXCLUDED.status,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE savings_goals.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('savings_goals', record_count);
+
+
+    -- ========================================================
+    -- TRANSACTIONS
+    -- ========================================================
+    --
+    -- Transactions are restored after their referenced master
+    -- records and before their dependent child records.
+
+    records := backup_data->'tables'->'transactions';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid transactions backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Transaction record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO transactions (
+            id,
+            user_id,
+            transaction_date,
+            transaction_type,
+            amount,
+            source_account_id,
+            destination_account_id,
+            category_id,
+            payment_method,
+            person_id,
+            description,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            transaction_date,
+            transaction_type,
+            amount,
+            source_account_id,
+            destination_account_id,
+            category_id,
+            payment_method,
+            person_id,
+            description,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::transactions,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            transaction_date = EXCLUDED.transaction_date,
+            transaction_type = EXCLUDED.transaction_type,
+            amount = EXCLUDED.amount,
+            source_account_id = EXCLUDED.source_account_id,
+            destination_account_id = EXCLUDED.destination_account_id,
+            category_id = EXCLUDED.category_id,
+            payment_method = EXCLUDED.payment_method,
+            person_id = EXCLUDED.person_id,
+            description = EXCLUDED.description,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE transactions.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('transactions', record_count);
+
+
+    -- ========================================================
+    -- TRANSFERS
+    -- ========================================================
+
+    records := backup_data->'tables'->'transfers';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid transfers backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Transfer record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO transfers (
+            id,
+            user_id,
+            transaction_id,
+            from_account_id,
+            to_account_id,
+            amount,
+            transfer_date,
+            description,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            transaction_id,
+            from_account_id,
+            to_account_id,
+            amount,
+            transfer_date,
+            description,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::transfers,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            transaction_id = EXCLUDED.transaction_id,
+            from_account_id = EXCLUDED.from_account_id,
+            to_account_id = EXCLUDED.to_account_id,
+            amount = EXCLUDED.amount,
+            transfer_date = EXCLUDED.transfer_date,
+            description = EXCLUDED.description,
+            updated_at = EXCLUDED.updated_at
+        WHERE transfers.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('transfers', record_count);
+
+
+    -- ========================================================
+    -- FRIENDS' MONEY
+    -- ========================================================
+
+    records := backup_data->'tables'->'friends_money';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid friends_money backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Friends money record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO friends_money (
+            id,
+            user_id,
+            person_id,
+            transaction_id,
+            account_id,
+            amount_received,
+            amount_returned,
+            received_date,
+            expected_return_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            person_id,
+            transaction_id,
+            account_id,
+            amount_received,
+            amount_returned,
+            received_date,
+            expected_return_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::friends_money,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            person_id = EXCLUDED.person_id,
+            transaction_id = EXCLUDED.transaction_id,
+            account_id = EXCLUDED.account_id,
+            amount_received = EXCLUDED.amount_received,
+            amount_returned = EXCLUDED.amount_returned,
+            received_date = EXCLUDED.received_date,
+            expected_return_date = EXCLUDED.expected_return_date,
+            status = EXCLUDED.status,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE friends_money.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('friends_money', record_count);
+
+
+    -- ========================================================
+    -- BUDGETS
+    -- ========================================================
+
+    records := backup_data->'tables'->'budgets';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid budgets backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Budget record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO budgets (
+            id,
+            user_id,
+            category_id,
+            budget_month,
+            budget_year,
+            budget_amount,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            category_id,
+            budget_month,
+            budget_year,
+            budget_amount,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::budgets,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            category_id = EXCLUDED.category_id,
+            budget_month = EXCLUDED.budget_month,
+            budget_year = EXCLUDED.budget_year,
+            budget_amount = EXCLUDED.budget_amount,
+            updated_at = EXCLUDED.updated_at
+        WHERE budgets.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('budgets', record_count);
+
+
+    -- ========================================================
+    -- SAVINGS CONTRIBUTIONS
+    -- ========================================================
+
+    records := backup_data->'tables'->'savings_contributions';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid savings contributions backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Savings contribution belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO savings_contributions (
+            id,
+            user_id,
+            savings_goal_id,
+            transaction_id,
+            account_id,
+            amount,
+            contribution_date,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            savings_goal_id,
+            transaction_id,
+            account_id,
+            amount,
+            contribution_date,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::savings_contributions,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            savings_goal_id = EXCLUDED.savings_goal_id,
+            transaction_id = EXCLUDED.transaction_id,
+            account_id = EXCLUDED.account_id,
+            amount = EXCLUDED.amount,
+            contribution_date = EXCLUDED.contribution_date,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE savings_contributions.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('savings_contributions', record_count);
+
+
+    -- ========================================================
+    -- RECURRING TRANSACTIONS
+    -- ========================================================
+
+    records := backup_data->'tables'->'recurring_transactions';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid recurring transactions backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Recurring transaction belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO recurring_transactions (
+            id,
+            user_id,
+            transaction_name,
+            transaction_type,
+            amount,
+            account_id,
+            destination_account_id,
+            category_id,
+            payment_method,
+            frequency,
+            start_date,
+            next_due_date,
+            is_active,
+            auto_create,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            transaction_name,
+            transaction_type,
+            amount,
+            account_id,
+            destination_account_id,
+            category_id,
+            payment_method,
+            frequency,
+            start_date,
+            next_due_date,
+            is_active,
+            auto_create,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::recurring_transactions,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            transaction_name = EXCLUDED.transaction_name,
+            transaction_type = EXCLUDED.transaction_type,
+            amount = EXCLUDED.amount,
+            account_id = EXCLUDED.account_id,
+            destination_account_id = EXCLUDED.destination_account_id,
+            category_id = EXCLUDED.category_id,
+            payment_method = EXCLUDED.payment_method,
+            frequency = EXCLUDED.frequency,
+            start_date = EXCLUDED.start_date,
+            next_due_date = EXCLUDED.next_due_date,
+            is_active = EXCLUDED.is_active,
+            auto_create = EXCLUDED.auto_create,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE recurring_transactions.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('recurring_transactions', record_count);
+
+
+    -- ========================================================
+    -- BACKUP HISTORY
+    -- ========================================================
+
+    records := backup_data->'tables'->'backup_history';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid backup history data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Backup history record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO backup_history (
+            id,
+            user_id,
+            backup_type,
+            backup_filename,
+            backup_version,
+            record_count,
+            created_at
+        )
+        SELECT
+            id,
+            user_id,
+            backup_type,
+            backup_filename,
+            backup_version,
+            record_count,
+            created_at
+        FROM jsonb_populate_recordset(
+            NULL::backup_history,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            backup_type = EXCLUDED.backup_type,
+            backup_filename = EXCLUDED.backup_filename,
+            backup_version = EXCLUDED.backup_version,
+            record_count = EXCLUDED.record_count,
+            created_at = EXCLUDED.created_at
+        WHERE backup_history.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('backup_history', record_count);
+
+
+    -- ========================================================
+    -- APP SETTINGS
+    -- ========================================================
+
+    records := backup_data->'tables'->'app_settings';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid app settings backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'App setting belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO app_settings (
+            id,
+            user_id,
+            setting_key,
+            setting_value,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            setting_key,
+            setting_value,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::app_settings,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            setting_key = EXCLUDED.setting_key,
+            setting_value = EXCLUDED.setting_value,
+            updated_at = EXCLUDED.updated_at
+        WHERE app_settings.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('app_settings', record_count);
+
+
+    -- ========================================================
+    -- MONEY LENT
+    -- ========================================================
+
+    records := backup_data->'tables'->'money_lent';
+
+    IF records IS NOT NULL THEN
+
+        IF jsonb_typeof(records) <> 'array' THEN
+            RAISE EXCEPTION 'Invalid money lent backup data.';
+        END IF;
+
+        FOR record_item IN
+            SELECT value FROM jsonb_array_elements(records)
+        LOOP
+            IF (record_item->>'user_id')::UUID <> p_user_id THEN
+                RAISE EXCEPTION 'Money lent record belongs to another user.';
+            END IF;
+        END LOOP;
+
+        INSERT INTO money_lent (
+            id,
+            user_id,
+            person_id,
+            transaction_id,
+            account_id,
+            amount_lent,
+            amount_returned,
+            lent_date,
+            expected_return_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            user_id,
+            person_id,
+            transaction_id,
+            account_id,
+            amount_lent,
+            amount_returned,
+            lent_date,
+            expected_return_date,
+            status,
+            notes,
+            created_at,
+            updated_at
+        FROM jsonb_populate_recordset(
+            NULL::money_lent,
+            records
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            person_id = EXCLUDED.person_id,
+            transaction_id = EXCLUDED.transaction_id,
+            account_id = EXCLUDED.account_id,
+            amount_lent = EXCLUDED.amount_lent,
+            amount_returned = EXCLUDED.amount_returned,
+            lent_date = EXCLUDED.lent_date,
+            expected_return_date = EXCLUDED.expected_return_date,
+            status = EXCLUDED.status,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at
+        WHERE money_lent.user_id = p_user_id;
+
+        GET DIAGNOSTICS record_count = ROW_COUNT;
+
+    ELSE
+        record_count := 0;
+    END IF;
+
+    restored_counts :=
+        restored_counts ||
+        jsonb_build_object('money_lent', record_count);
+
+
+    -- ========================================================
+    -- FINAL RESULT
+    -- ========================================================
+
+    RETURN jsonb_build_object(
+        'backup_version',
+        backup_data->>'backup_version',
+
+        'user_id',
+        p_user_id,
+
+        'restored_counts',
+        restored_counts,
+
+        'total_records',
+        (
+            SELECT COALESCE(
+                SUM((value)::INTEGER),
+                0
+            )
+            FROM jsonb_each_text(restored_counts)
+        )
+    );
+
+END;
+$$;
+
+
+-- ============================================================
+-- 17. FUNCTION PRIVILEGES
+-- ============================================================
+
+-- Prevent ordinary anon/authenticated callers from executing
+-- the SECURITY DEFINER restore function directly.
+REVOKE ALL
+ON FUNCTION restore_expense_tracker_backup(JSONB, UUID)
+FROM PUBLIC;
+
+REVOKE ALL
+ON FUNCTION restore_expense_tracker_backup(JSONB, UUID)
+FROM anon;
+
+REVOKE ALL
+ON FUNCTION restore_expense_tracker_backup(JSONB, UUID)
+FROM authenticated;
+
+
+-- ============================================================
+-- 18. SCHEMA NOTES
+-- ============================================================
+
+-- Money calculations MUST use NUMERIC, never FLOAT/REAL.
+--
+-- Transfers:
+--   internal_transfer is neither income nor expense.
+--
+-- Friend's money:
+--   friend_money_received increases account balance but represents
+--   a liability and is therefore excluded from "actual money".
+--
+-- Money lent:
+--   friend_money_lent decreases account balance but is NOT an
+--   expense.
+--
+-- Money returned:
+--   friend_money_lent_returned increases the original account
+--   balance but is NOT income.
+--
+-- Savings contributions:
+--   treated as an internal movement and not normal spending.
+--
+-- Account balances are derived from opening_balance plus the
+-- transaction ledger. The database does not store a mutable
+-- current_balance column.
+--
+-- Application services MUST always filter by user_id.
+--
+-- The database additionally enforces same-user relationships
+-- through composite foreign keys such as:
+--     (user_id, account_id)
+--     (user_id, category_id)
+--     (user_id, person_id)
+--     (user_id, transaction_id)
+--
+-- app_users is intentionally excluded from JSON/CSV application
+-- backups. Authentication credentials must never be restored
+-- from a personal financial backup.
+
+
+-- ============================================================
+-- END OF CANONICAL SCHEMA
+-- ============================================================

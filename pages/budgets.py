@@ -8,7 +8,10 @@ from components.navigation import (
     show_app_header,
 )
 
-from database.queries import get_table
+from services.category_service import (
+    get_all_categories,
+)
+
 from services.budget_service import (
     get_all_budgets,
     create_budget,
@@ -43,37 +46,31 @@ show_app_header(
 
 def money(value) -> Decimal:
     """Safely convert a value to Decimal."""
-    return Decimal(str(value or "0.00"))
+
+    if value is None:
+        return Decimal("0.00")
+
+    try:
+
+        result = Decimal(
+            str(value)
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        return Decimal("0.00")
+
+    if not result.is_finite():
+
+        return Decimal("0.00")
+
+    return result
 
 
 def format_inr(value) -> str:
     """Format amount as INR."""
+
     return f"₹{money(value):,.2f}"
-
-
-def get_categories() -> list[dict]:
-    """Return active expense categories."""
-
-    response = (
-        get_table("categories")
-        .select(
-            "id,name,category_type,is_active"
-        )
-        .eq(
-            "is_active",
-            True,
-        )
-        .eq(
-            "category_type",
-            "expense",
-        )
-        .order(
-            "name"
-        )
-        .execute()
-    )
-
-    return response.data or []
 
 
 def get_month_range(
@@ -111,11 +108,76 @@ def get_month_range(
     return start_date, end_date
 
 
+def parse_positive_amount(
+    value: str,
+    field_name: str,
+) -> Decimal:
+    """Parse and validate a positive monetary amount."""
+
+    clean_value = (
+        value or ""
+    ).strip()
+
+    if not clean_value:
+
+        raise ValueError(
+            f"Please enter a {field_name}."
+        )
+
+    try:
+
+        amount = Decimal(
+            clean_value
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        raise ValueError(
+            f"Please enter a valid {field_name}."
+        )
+
+    if not amount.is_finite():
+
+        raise ValueError(
+            f"Please enter a valid {field_name}."
+        )
+
+    if amount <= Decimal("0.00"):
+
+        raise ValueError(
+            f"{field_name.capitalize()} must be greater than ₹0."
+        )
+
+    return amount
+
+
 # =========================================================
-# LOAD DATA
+# LOAD CATEGORIES
 # =========================================================
 
-categories = get_categories()
+try:
+
+    categories = get_all_categories()
+
+except Exception:
+
+    st.error(
+        "Unable to load expense categories. "
+        "Please try again."
+    )
+
+    st.stop()
+
+
+# Only active expense categories belong on the
+# budget creation screen.
+categories = [
+    category
+    for category in categories
+    if category.get("is_active", True)
+    and category.get("category_type") == "expense"
+]
+
 
 category_map = {
     category["id"]: category["name"]
@@ -131,6 +193,7 @@ st.markdown("## 📅 Budget Period")
 
 month_col1, month_col2 = st.columns(2)
 
+
 with month_col1:
 
     selected_date = st.date_input(
@@ -138,12 +201,14 @@ with month_col1:
         value=date.today().replace(day=1),
     )
 
+
 selected_month = selected_date.month
 selected_year = selected_date.year
 
 month_name = selected_date.strftime(
     "%B %Y"
 )
+
 
 with month_col2:
 
@@ -164,6 +229,7 @@ st.markdown("## ➕ Create Budget")
 st.caption(
     "Set a monthly spending limit for an expense category."
 )
+
 
 if not categories:
 
@@ -187,10 +253,12 @@ else:
             format_func=lambda value: category_map[value],
         )
 
+
         amount_text = st.text_input(
             "Monthly Budget Amount",
             placeholder="Example: 5000",
         )
+
 
         create_button = st.form_submit_button(
             "💰 Create Budget",
@@ -201,61 +269,48 @@ else:
 
     if create_button:
 
-        if not amount_text.strip():
+        try:
+
+            amount = parse_positive_amount(
+                amount_text,
+                "budget amount",
+            )
+
+        except ValueError as exc:
 
             st.error(
-                "Please enter a budget amount."
+                str(exc)
             )
 
         else:
 
             try:
 
-                amount = Decimal(
-                    amount_text.strip()
+                create_budget(
+                    category_id=category_id,
+                    month=selected_month,
+                    year=selected_year,
+                    amount=amount,
                 )
 
-                if amount <= Decimal("0.00"):
+                st.success(
+                    f"Budget created for "
+                    f"{category_map[category_id]}."
+                )
 
-                    st.error(
-                        "Budget amount must be greater than ₹0."
-                    )
+                st.rerun()
 
-                else:
-
-                    try:
-
-                        create_budget(
-                            category_id=category_id,
-                            month=selected_month,
-                            year=selected_year,
-                            amount=amount,
-                        )
-
-                        st.success(
-                            f"Budget created for "
-                            f"{category_map[category_id]}."
-                        )
-
-                        st.rerun()
-
-                    except ValueError as exc:
-
-                        st.error(
-                            str(exc)
-                        )
-
-                    except Exception:
-
-                        st.error(
-                            "Could not create the budget. "
-                            "Please try again."
-                        )
-
-            except InvalidOperation:
+            except ValueError as exc:
 
                 st.error(
-                    "Please enter a valid numeric amount."
+                    str(exc)
+                )
+
+            except Exception:
+
+                st.error(
+                    "Could not create the budget. "
+                    "Please try again."
                 )
 
 
@@ -270,6 +325,7 @@ st.markdown(
     f"## 📊 {month_name} Budget Overview"
 )
 
+
 try:
 
     budgets = get_all_budgets(
@@ -280,7 +336,8 @@ try:
 except Exception:
 
     st.error(
-        "Budgets could not be loaded."
+        "Budgets could not be loaded. "
+        "Please try again."
     )
 
     st.stop()
@@ -319,10 +376,12 @@ start_date, end_date = get_month_range(
     selected_year,
 )
 
+
 budget_results = []
 
 total_budget = Decimal("0.00")
 total_spent = Decimal("0.00")
+
 
 for budget in budgets:
 
@@ -330,10 +389,12 @@ for budget in budgets:
         "category_id"
     )
 
+
     category_name = category_map.get(
         category_id,
         "Unknown Category",
     )
+
 
     budget_amount = money(
         budget.get(
@@ -341,19 +402,101 @@ for budget in budgets:
         )
     )
 
-    spent = get_category_expense_total(
-        category_id=category_id,
-        start_date=start_date,
-        end_date=end_date,
+
+    try:
+
+        spent = money(
+            get_category_expense_total(
+                category_id=category_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        )
+
+    except Exception:
+
+        st.error(
+            f"Unable to calculate spending for "
+            f"{category_name}."
+        )
+
+        st.stop()
+
+
+    try:
+
+        status = get_budget_status(
+            budget=budget,
+            spent=spent,
+        )
+
+    except Exception:
+
+        st.error(
+            f"Unable to calculate budget status for "
+            f"{category_name}."
+        )
+
+        st.stop()
+
+
+    # Normalize service output back to Decimal so
+    # the page never performs financial calculations
+    # using floats.
+    status["budget_amount"] = money(
+        status.get(
+            "budget_amount",
+            budget_amount,
+        )
     )
 
-    status = get_budget_status(
-        budget=budget,
-        spent=spent,
+    status["spent"] = money(
+        status.get(
+            "spent",
+            spent,
+        )
     )
+
+    status["remaining"] = money(
+        status.get(
+            "remaining",
+            status["budget_amount"] - status["spent"],
+        )
+    )
+
+    percentage = status.get(
+        "percentage",
+        Decimal("0.00"),
+    )
+
+    try:
+
+        percentage = Decimal(
+            str(percentage)
+        )
+
+        if not percentage.is_finite():
+
+            percentage = Decimal("0.00")
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        percentage = Decimal("0.00")
+
+
+    status["percentage"] = percentage
+
+
+    # Recalculate exceeded from normalized Decimal values.
+    status["exceeded"] = (
+        status["remaining"]
+        < Decimal("0.00")
+    )
+
 
     total_budget += status["budget_amount"]
     total_spent += status["spent"]
+
 
     budget_results.append(
         {
@@ -366,13 +509,16 @@ for budget in budgets:
 
 
 total_remaining = (
-    total_budget - total_spent
+    total_budget
+    - total_spent
 )
+
 
 if total_budget > Decimal("0.00"):
 
     total_percentage = (
-        total_spent / total_budget
+        total_spent
+        / total_budget
     ) * Decimal("100")
 
 else:
@@ -386,6 +532,7 @@ else:
 
 summary1, summary2, summary3, summary4 = st.columns(4)
 
+
 with summary1:
 
     st.metric(
@@ -393,12 +540,14 @@ with summary1:
         format_inr(total_budget),
     )
 
+
 with summary2:
 
     st.metric(
         "Total Spent",
         format_inr(total_spent),
     )
+
 
 with summary3:
 
@@ -413,8 +562,11 @@ with summary3:
 
         st.metric(
             "Over Budget",
-            format_inr(abs(total_remaining)),
+            format_inr(
+                abs(total_remaining)
+            ),
         )
+
 
 with summary4:
 
@@ -448,7 +600,9 @@ for index, item in enumerate(
         "budget_amount"
     ]
 
-    spent = status["spent"]
+    spent = status[
+        "spent"
+    ]
 
     remaining = status[
         "remaining"
@@ -463,20 +617,21 @@ for index, item in enumerate(
     ]
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # CATEGORY HEADER
-    # -----------------------------------------------------
+    # =====================================================
 
     st.markdown(
         f"#### 🏷️ {category_name}"
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # METRICS
-    # -----------------------------------------------------
+    # =====================================================
 
     col1, col2, col3 = st.columns(3)
+
 
     with col1:
 
@@ -487,6 +642,7 @@ for index, item in enumerate(
             ),
         )
 
+
     with col2:
 
         st.metric(
@@ -495,6 +651,7 @@ for index, item in enumerate(
                 spent
             ),
         )
+
 
     with col3:
 
@@ -517,33 +674,42 @@ for index, item in enumerate(
             )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # PROGRESS
-    # -----------------------------------------------------
+    # =====================================================
+
+    # Progress bars accept float, so conversion is limited
+    # to the UI layer only. All actual financial calculations
+    # above remain Decimal-based.
+
+    clamped_percentage = min(
+        max(
+            percentage,
+            Decimal("0.00"),
+        ),
+        Decimal("100.00"),
+    )
+
 
     progress = float(
-        min(
-            max(
-                percentage,
-                Decimal("0.00"),
-            ),
-            Decimal("100.00"),
-        )
+        clamped_percentage
         / Decimal("100.00")
     )
+
 
     st.progress(
         progress
     )
+
 
     st.caption(
         f"{percentage:.1f}% of budget used"
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # STATUS
-    # -----------------------------------------------------
+    # =====================================================
 
     if exceeded:
 
@@ -565,9 +731,9 @@ for index, item in enumerate(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # EDIT / DELETE
-    # -----------------------------------------------------
+    # =====================================================
 
     with st.expander(
         "⚙️ Manage Budget"
@@ -579,7 +745,13 @@ for index, item in enumerate(
             key=f"budget_amount_{budget_id}",
         )
 
+
         manage_col1, manage_col2 = st.columns(2)
+
+
+        # -------------------------------------------------
+        # UPDATE
+        # -------------------------------------------------
 
         with manage_col1:
 
@@ -591,41 +763,44 @@ for index, item in enumerate(
 
                 try:
 
-                    new_amount = Decimal(
-                        new_amount_text.strip()
+                    new_amount = parse_positive_amount(
+                        new_amount_text,
+                        "budget amount",
                     )
 
-                    if new_amount <= Decimal("0.00"):
 
-                        st.error(
-                            "Budget must be greater than ₹0."
-                        )
+                    update_budget(
+                        budget_id=budget_id,
+                        amount=new_amount,
+                    )
 
-                    else:
 
-                        update_budget(
-                            budget_id=budget_id,
-                            amount=new_amount,
-                        )
+                    st.success(
+                        "Budget updated successfully."
+                    )
 
-                        st.success(
-                            "Budget updated successfully."
-                        )
 
-                        st.rerun()
+                    st.rerun()
 
-                except InvalidOperation:
+
+                except ValueError as exc:
 
                     st.error(
-                        "Enter a valid numeric amount."
+                        str(exc)
                     )
+
 
                 except Exception:
 
                     st.error(
-                        "Budget could not be updated."
+                        "Budget could not be updated. "
+                        "Please try again."
                     )
 
+
+        # -------------------------------------------------
+        # DELETE
+        # -------------------------------------------------
 
         with manage_col2:
 
@@ -640,6 +815,10 @@ for index, item in enumerate(
                 ] = True
 
 
+        # -------------------------------------------------
+        # DELETE CONFIRMATION
+        # -------------------------------------------------
+
         if st.session_state.get(
             f"confirm_delete_{budget_id}",
             False,
@@ -650,7 +829,9 @@ for index, item in enumerate(
                 f"for {month_name}?"
             )
 
+
             confirm_col1, confirm_col2 = st.columns(2)
+
 
             with confirm_col1:
 
@@ -667,22 +848,28 @@ for index, item in enumerate(
                             budget_id
                         )
 
+
                         st.session_state.pop(
                             f"confirm_delete_{budget_id}",
                             None,
                         )
 
+
                         st.success(
                             "Budget deleted successfully."
                         )
 
+
                         st.rerun()
+
 
                     except Exception:
 
                         st.error(
-                            "Budget could not be deleted."
+                            "Budget could not be deleted. "
+                            "Please try again."
                         )
+
 
             with confirm_col2:
 
@@ -696,6 +883,7 @@ for index, item in enumerate(
                         f"confirm_delete_{budget_id}",
                         None,
                     )
+
 
                     st.rerun()
 
@@ -723,5 +911,6 @@ st.info(
 
 
 st.caption(
-    "💡 A budget is a spending limit for planning purposes; your transaction records remain the source of truth."
+    "💡 A budget is a spending limit for planning purposes; "
+    "your transaction records remain the source of truth."
 )

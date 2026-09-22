@@ -20,13 +20,14 @@ from services.transaction_service import (
 from utils.calculations import calculate_actual_money
 
 
-# ---------------------------------------------------------
+# =========================================================
 # PAGE SETUP
-# ---------------------------------------------------------
+# =========================================================
 
 setup_page(
-    "Dashboard",
-    "Your personal financial overview",
+    title="Dashboard",
+    icon="🏠",
+    layout="wide",
 )
 
 require_login()
@@ -37,9 +38,9 @@ show_app_header(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LOAD FINANCIAL DATA
-# ---------------------------------------------------------
+# =========================================================
 
 account_balances = get_all_account_balances()
 
@@ -53,9 +54,9 @@ actual_money = calculate_actual_money(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # FINANCIAL OVERVIEW
-# ---------------------------------------------------------
+# =========================================================
 
 st.markdown("## 💰 Financial Overview")
 
@@ -65,9 +66,9 @@ st.caption(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # MAIN KPI CARDS
-# ---------------------------------------------------------
+# =========================================================
 
 col1, col2, col3 = st.columns(3)
 
@@ -93,9 +94,9 @@ with col3:
 st.divider()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # ACCOUNT BALANCES
-# ---------------------------------------------------------
+# =========================================================
 
 st.markdown("### 🏦 Account Balances")
 
@@ -113,14 +114,20 @@ else:
 
         account_name = account.get(
             "account_name",
-            account.get("name", "Account"),
+            account.get(
+                "name",
+                "Account",
+            ),
         )
 
         balance = Decimal(
             str(
                 account.get(
                     "current_balance",
-                    account.get("balance", "0.00"),
+                    account.get(
+                        "balance",
+                        "0.00",
+                    ),
                 )
             )
         )
@@ -142,14 +149,12 @@ else:
 st.divider()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # RECENT TRANSACTIONS
-# ---------------------------------------------------------
+# =========================================================
 
 st.markdown("### 🧾 Recent Transactions")
 
-# Use a valid full date range because the current
-# transaction service expects actual date values.
 recent_transactions = get_filtered_transactions(
     start_date=date.min,
     end_date=date.max,
@@ -157,6 +162,7 @@ recent_transactions = get_filtered_transactions(
     account_ids=None,
     category_ids=None,
 )
+
 
 # Keep only the latest five transactions.
 recent_transactions = recent_transactions[:5]
@@ -200,8 +206,9 @@ else:
             "",
         )
 
+
         # -------------------------------------------------
-        # Transaction display metadata
+        # TRANSACTION DISPLAY METADATA
         # -------------------------------------------------
 
         if transaction_type == "income":
@@ -234,13 +241,24 @@ else:
             icon = "🎯"
             prefix = "-"
 
+        elif transaction_type == "friend_money_lent":
+
+            icon = "💸"
+            prefix = "-"
+
+        elif transaction_type == "friend_money_lent_returned":
+
+            icon = "↩️"
+            prefix = "+"
+
         else:
 
             icon = "💳"
             prefix = ""
 
+
         # -------------------------------------------------
-        # Transaction row
+        # TRANSACTION ROW
         # -------------------------------------------------
 
         col1, col2, col3 = st.columns(
@@ -248,7 +266,10 @@ else:
         )
 
         with col1:
-            st.markdown(f"### {icon}")
+
+            st.markdown(
+                f"### {icon}"
+            )
 
         with col2:
 
@@ -270,13 +291,14 @@ else:
         st.divider()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # QUICK ACTIONS
-# ---------------------------------------------------------
+# =========================================================
 
 st.markdown("### ⚡ Quick Actions")
 
 action1, action2, action3 = st.columns(3)
+
 
 with action1:
 
@@ -284,6 +306,7 @@ with action1:
         "➕ Add Transaction",
         use_container_width=True,
     ):
+
         st.switch_page(
             "pages/Add_transaction.py"
         )
@@ -295,6 +318,7 @@ with action2:
         "📋 Transaction History",
         use_container_width=True,
     ):
+
         st.switch_page(
             "pages/Transaction_History.py"
         )
@@ -306,14 +330,15 @@ with action3:
         "🏦 Accounts",
         use_container_width=True,
     ):
+
         st.switch_page(
             "pages/accounts.py"
         )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # FOOTER
-# ---------------------------------------------------------
+# =========================================================
 
 st.divider()
 

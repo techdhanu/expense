@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
+from database.client import get_supabase_client
 from database.queries import get_table
 from services.authentication_service import get_current_user_id
 from utils.constants import TRANSACTION_TYPES
@@ -592,86 +593,70 @@ def create_expense(
 
 
 def create_transfer(
-    transaction_date: date,
+    transaction_date,
     amount,
-    from_account_id: str,
-    to_account_id: str,
-    description: str | None = None,
-    notes: str | None = None,
-) -> dict:
+    from_account_id,
+    to_account_id,
+    description=None,
+    notes=None,
+):
     """
-    Create an internal transfer.
+    Create an internal account transfer atomically.
 
-    Transfers move money between accounts and are not treated
-    as income or expenses.
+    The transaction row and transfer row are created inside a single
+    PostgreSQL transaction through the record_transfer_atomic RPC.
+
+    Internal transfers are not income or expenses and therefore do not
+    change the user's total overall balance.
     """
-
     user_id = get_current_user_id()
 
-    if not from_account_id:
-        raise ValueError(
-            "Transfer requires a source account."
-        )
+    # Preserve service-level validation before calling the RPC.
+    if from_account_id is None:
+        raise ValueError("Source account is required.")
 
-    if not to_account_id:
-        raise ValueError(
-            "Transfer requires a destination account."
-        )
+    if to_account_id is None:
+        raise ValueError("Destination account is required.")
 
     if from_account_id == to_account_id:
-        raise ValueError(
-            "Source and destination accounts must be different."
-        )
+        raise ValueError("Source and destination accounts must be different.")
 
-    # -----------------------------------------------------
-    # Critical ownership validation
-    # -----------------------------------------------------
-    _get_owned_account(
-        from_account_id,
-        require_active=True,
-    )
+    amount = validate_amount(amount)
 
-    _get_owned_account(
-        to_account_id,
-        require_active=True,
-    )
+    # Preserve the existing service contract: transaction dates must be
+    # actual date values, and Supabase RPC arguments must be JSON-serializable.
+    transaction_date = _validate_transaction_date(transaction_date)
 
-    validated_amount = validate_amount(amount)
+    # Validate ownership and active status at the service layer.
+    _get_owned_account(from_account_id)
+    _get_owned_account(to_account_id)
 
-    transaction = create_transaction(
-        transaction_date=transaction_date,
-        transaction_type="internal_transfer",
-        amount=validated_amount,
-        source_account_id=from_account_id,
-        destination_account_id=to_account_id,
-        description=description,
-        notes=notes,
-    )
+    # The database RPC repeats the ownership validation inside the
+    # same PostgreSQL transaction, protecting against race conditions.
+    response = get_supabase_client().rpc(
+        "record_transfer_atomic",
+        {
+            "p_transaction_date": transaction_date.isoformat(),
+            "p_amount": str(amount),
+            "p_from_account_id": from_account_id,
+            "p_to_account_id": to_account_id,
+            "p_description": description,
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
 
-    transfer_data = {
-        "user_id": user_id,
-        "transaction_id": transaction["id"],
-        "from_account_id": from_account_id,
-        "to_account_id": to_account_id,
-        "amount": str(validated_amount),
-        "transfer_date": transaction_date.isoformat(),
-        "description": _clean_text(description),
-    }
+    result = response.data
 
-    response = (
-        get_table("transfers")
-        .insert(transfer_data)
-        .execute()
-    )
+    if not result:
+        raise RuntimeError("Failed to create transfer.")
 
-    if not response.data:
-        raise RuntimeError(
-            "Transfer record could not be created."
-        )
+    # The RPC returns JSONB containing the created transaction.
+    # Remove the RPC-only transfer_id field so the public service
+    # contract remains compatible with the existing function.
+    result.pop("transfer_id", None)
 
-    return transaction
-
-
+    return result
 # =========================================================
 # TRANSACTION UPDATE
 # =========================================================
@@ -824,7 +809,74 @@ def update_transaction(
         )
 
     # -----------------------------------------------------
-    # Update main transaction
+    # Update transaction
+    # -----------------------------------------------------
+    if existing_type == "internal_transfer":
+        """
+        Internal transfers have two linked financial records:
+            1. transactions
+            2. transfers
+
+        Use the atomic PostgreSQL RPC so both records are updated
+        inside the same database transaction.
+        """
+
+        # Preserve existing values for fields that were not edited.
+        transaction_date = existing_transaction["transaction_date"]
+        amount = existing_transaction["amount"]
+        category_id = existing_transaction.get("category_id")
+        payment_method = existing_transaction.get("payment_method")
+        description = existing_transaction.get("description")
+        notes = existing_transaction.get("notes")
+
+        # Apply requested changes.
+        if "transaction_date" in clean_updates:
+            transaction_date = clean_updates["transaction_date"]
+
+        if "amount" in clean_updates:
+            amount = clean_updates["amount"]
+
+        if "category_id" in clean_updates:
+            category_id = clean_updates["category_id"]
+
+        if "payment_method" in clean_updates:
+            payment_method = clean_updates["payment_method"]
+
+        if "description" in clean_updates:
+            description = clean_updates["description"]
+
+        if "notes" in clean_updates:
+            notes = clean_updates["notes"]
+
+        response = get_supabase_client().rpc(
+            "update_transfer_atomic",
+            {
+                "p_transaction_id": transaction_id,
+                "p_transaction_date": transaction_date,
+                "p_amount": str(amount),
+                "p_category_id": category_id,
+                "p_payment_method": payment_method,
+                "p_description": description,
+                "p_notes": notes,
+                "p_user_id": user_id,
+            },
+        ).execute()
+
+        result = response.data
+
+        if not result:
+            raise RuntimeError(
+                "Transfer could not be updated."
+            )
+
+        # The RPC returns transfer_id for internal verification,
+        # but preserve the existing service return contract.
+        result.pop("transfer_id", None)
+
+        return result
+
+    # -----------------------------------------------------
+    # Update non-transfer transaction
     # -----------------------------------------------------
     response = (
         get_table("transactions")
@@ -839,47 +891,7 @@ def update_transaction(
             "Transaction could not be updated."
         )
 
-    updated_transaction = response.data[0]
-
-    # -----------------------------------------------------
-    # Synchronize linked transfer
-    # -----------------------------------------------------
-    if existing_type == "internal_transfer":
-
-        transfer_updates = {}
-
-        if "amount" in clean_updates:
-            transfer_updates["amount"] = (
-                clean_updates["amount"]
-            )
-
-        if "transaction_date" in clean_updates:
-            transfer_updates["transfer_date"] = (
-                clean_updates["transaction_date"]
-            )
-
-        if "description" in clean_updates:
-            transfer_updates["description"] = (
-                clean_updates["description"]
-            )
-
-        if transfer_updates:
-
-            (
-                get_table("transfers")
-                .update(transfer_updates)
-                .eq(
-                    "transaction_id",
-                    transaction_id,
-                )
-                .eq(
-                    "user_id",
-                    user_id,
-                )
-                .execute()
-            )
-
-    return updated_transaction
+    return response.data[0]
 
 
 # =========================================================
@@ -941,40 +953,23 @@ def delete_transaction(
         )
 
     # -----------------------------------------------------
-    # Delete linked transfer
+    # Delete internal transfer atomically
     # -----------------------------------------------------
     if transaction_type == "internal_transfer":
+        response = get_supabase_client().rpc(
+            "delete_transfer_atomic",
+            {
+                "p_transaction_id": transaction_id,
+                "p_user_id": user_id,
+            },
+        ).execute()
 
-        transfer_response = (
-            get_table("transfers")
-            .select("id")
-            .eq(
-                "transaction_id",
-                transaction_id,
+        if not response.data:
+            raise RuntimeError(
+                "Transfer could not be deleted."
             )
-            .eq(
-                "user_id",
-                user_id,
-            )
-            .limit(1)
-            .execute()
-        )
 
-        if transfer_response.data:
-
-            (
-                get_table("transfers")
-                .delete()
-                .eq(
-                    "transaction_id",
-                    transaction_id,
-                )
-                .eq(
-                    "user_id",
-                    user_id,
-                )
-                .execute()
-            )
+        return None
 
     # -----------------------------------------------------
     # Delete main transaction

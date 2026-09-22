@@ -2,11 +2,13 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime
 
+
 from components.navigation import (
     setup_page,
     require_login,
     show_app_header,
 )
+
 
 from services.backup_service import (
     create_json_backup,
@@ -26,7 +28,9 @@ setup_page(
     "wide",
 )
 
+
 require_login()
+
 
 show_app_header(
     "Backup & Restore",
@@ -42,11 +46,11 @@ st.info(
     """
     **Backup your expense tracker regularly.**
 
-    • JSON backup contains the complete application data.  
-    • CSV backup creates a separate CSV file for each table.  
+    • JSON backup contains the supported application data.  
+    • CSV backup creates a separate CSV file for each supported table.  
     • JSON backups can be restored through this page.  
     • CSV files are intended for viewing, analysis, and external storage.  
-    • Restoring a backup uses the database restore function as one transaction.
+    • Restoring a backup uses the database restore function atomically.
     """
 )
 
@@ -56,6 +60,7 @@ st.info(
 # =========================================================
 
 st.markdown("## 📦 Create Backup")
+
 
 json_col, csv_col = st.columns(2)
 
@@ -68,9 +73,11 @@ with json_col:
 
     st.markdown("### 🗄️ Complete JSON Backup")
 
+
     st.caption(
         "Recommended for restoring your complete application data."
     )
+
 
     if st.button(
         "📥 Create JSON Backup",
@@ -86,11 +93,13 @@ with json_col:
 
                 json_path = create_json_backup()
 
+
             if json_path.exists():
 
                 st.success(
                     "JSON backup created successfully."
                 )
+
 
                 with json_path.open(
                     "rb"
@@ -102,16 +111,21 @@ with json_col:
                         file_name=json_path.name,
                         mime="application/json",
                         use_container_width=True,
+                        key="download_json_backup",
                     )
 
-        except Exception as exc:
+            else:
+
+                st.error(
+                    "The JSON backup could not be created."
+                )
+
+
+        except Exception:
 
             st.error(
-                "JSON backup could not be created."
-            )
-
-            st.caption(
-                str(exc)
+                "JSON backup could not be created. "
+                "Please try again."
             )
 
 
@@ -123,9 +137,11 @@ with csv_col:
 
     st.markdown("### 📊 CSV Backup")
 
+
     st.caption(
         "Creates one CSV file for every supported database table."
     )
+
 
     if st.button(
         "📊 Create CSV Backups",
@@ -140,28 +156,40 @@ with csv_col:
 
                 csv_paths = create_csv_backups()
 
-            if csv_paths:
+
+            existing_paths = [
+                path
+                for path in csv_paths
+                if path.exists()
+            ]
+
+
+            if existing_paths:
 
                 st.success(
-                    f"{len(csv_paths)} CSV backup files created."
+                    f"{len(existing_paths)} CSV backup files created."
                 )
+
 
                 st.session_state[
                     "latest_csv_backups"
                 ] = [
                     str(path)
-                    for path in csv_paths
-                    if path.exists()
+                    for path in existing_paths
                 ]
 
-        except Exception as exc:
+            else:
+
+                st.warning(
+                    "No CSV backup files were created."
+                )
+
+
+        except Exception:
 
             st.error(
-                "CSV backups could not be created."
-            )
-
-            st.caption(
-                str(exc)
+                "CSV backups could not be created. "
+                "Please try again."
             )
 
 
@@ -179,13 +207,16 @@ if latest_csv_backups:
 
     st.divider()
 
+
     st.markdown(
         "### ⬇️ Download CSV Files"
     )
 
+
     st.caption(
         "Download the generated table backups individually."
     )
+
 
     for index in range(
         0,
@@ -197,9 +228,11 @@ if latest_csv_backups:
             index:index + 3
         ]
 
+
         columns = st.columns(
             len(row)
         )
+
 
         for column, path_string in zip(
             columns,
@@ -210,21 +243,33 @@ if latest_csv_backups:
                 path_string
             )
 
+
             with column:
 
                 if path.exists():
 
-                    with path.open(
-                        "rb"
-                    ) as csv_file:
+                    try:
 
-                        st.download_button(
-                            label=f"⬇️ {path.stem.split('_')[0]}",
-                            data=csv_file.read(),
-                            file_name=path.name,
-                            mime="text/csv",
-                            use_container_width=True,
-                            key=f"download_csv_{path.name}",
+                        with path.open(
+                            "rb"
+                        ) as csv_file:
+
+                            st.download_button(
+                                label=(
+                                    f"⬇️ "
+                                    f"{path.stem.split('_')[0]}"
+                                ),
+                                data=csv_file.read(),
+                                file_name=path.name,
+                                mime="text/csv",
+                                use_container_width=True,
+                                key=f"download_csv_{path.name}",
+                            )
+
+                    except OSError:
+
+                        st.warning(
+                            "This backup file is no longer available."
                         )
 
 
@@ -234,15 +279,18 @@ if latest_csv_backups:
 
 st.divider()
 
+
 st.markdown("## ♻️ Restore Backup")
+
 
 st.warning(
     """
     **Restore replaces/updates records using the database restore process.**
 
     Make sure you select the correct backup file before restoring.
-    The restore operation is designed to execute atomically: if the
-    database restore fails, PostgreSQL rolls back the transaction.
+
+    The restore operation is designed to execute atomically:
+    if the database restore fails, the database transaction is rolled back.
     """
 )
 
@@ -260,20 +308,24 @@ if uploaded_file is not None:
         f"Selected: **{uploaded_file.name}**"
     )
 
+
     file_size_kb = (
         uploaded_file.size / 1024
         if uploaded_file.size
         else 0
     )
 
+
     st.caption(
         f"File size: {file_size_kb:.2f} KB"
     )
 
 
-    # -----------------------------------------------------
-    # SAVE UPLOADED FILE TEMPORARILY
-    # -----------------------------------------------------
+    st.warning(
+        "Restoring a backup can modify existing financial records. "
+        "Create a fresh backup before continuing if you want a rollback point."
+    )
+
 
     if st.button(
         "🔍 Validate & Restore Backup",
@@ -283,9 +335,15 @@ if uploaded_file is not None:
 
         import tempfile
 
+
         temp_path = None
 
+
         try:
+
+            # -------------------------------------------------
+            # SAVE UPLOADED FILE TEMPORARILY
+            # -------------------------------------------------
 
             with tempfile.NamedTemporaryFile(
                 mode="wb",
@@ -297,13 +355,18 @@ if uploaded_file is not None:
                     uploaded_file.getvalue()
                 )
 
+
                 temp_path = Path(
                     temp_file.name
                 )
 
 
+            # -------------------------------------------------
+            # RESTORE
+            # -------------------------------------------------
+
             with st.spinner(
-                "Restoring backup..."
+                "Validating and restoring backup..."
             ):
 
                 result = restore_json_backup(
@@ -326,6 +389,7 @@ if uploaded_file is not None:
                     "record_count"
                 )
 
+
                 if restored_count is not None:
 
                     st.metric(
@@ -338,6 +402,7 @@ if uploaded_file is not None:
                     "message"
                 )
 
+
                 if message:
 
                     st.info(
@@ -345,7 +410,10 @@ if uploaded_file is not None:
                     )
 
 
-                # Display additional safe result fields.
+                # -------------------------------------------------
+                # SAFE RESULT DETAILS
+                # -------------------------------------------------
+
                 display_items = {
                     key: value
                     for key, value in result.items()
@@ -370,11 +438,12 @@ if uploaded_file is not None:
                             )
 
 
-        except FileNotFoundError as exc:
+        except FileNotFoundError:
 
             st.error(
-                str(exc)
+                "The uploaded backup file could not be processed."
             )
+
 
         except ValueError as exc:
 
@@ -382,25 +451,28 @@ if uploaded_file is not None:
                 f"Backup validation failed: {exc}"
             )
 
+
         except RuntimeError as exc:
 
             st.error(
                 f"Backup restore failed: {exc}"
             )
 
-        except Exception as exc:
+
+        except Exception:
 
             st.error(
-                "An unexpected error occurred during restore."
+                "An unexpected error occurred during restore. "
+                "No additional technical details are displayed for security."
             )
 
-            st.caption(
-                str(exc)
-            )
 
         finally:
 
-            if temp_path and temp_path.exists():
+            if (
+                temp_path is not None
+                and temp_path.exists()
+            ):
 
                 try:
 
@@ -417,6 +489,7 @@ if uploaded_file is not None:
 
 st.divider()
 
+
 st.markdown("## 🕘 Backup History")
 
 
@@ -424,14 +497,11 @@ try:
 
     backup_history = get_backup_history()
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        "Backup history could not be loaded."
-    )
-
-    st.caption(
-        str(exc)
+        "Backup history could not be loaded. "
+        "Please try again."
     )
 
     backup_history = []
@@ -447,11 +517,13 @@ else:
 
     history_rows = []
 
+
     for record in backup_history:
 
         created_at = record.get(
             "created_at"
         )
+
 
         if created_at:
 
@@ -468,7 +540,11 @@ else:
                     )
                 )
 
-            except ValueError:
+
+            except (
+                ValueError,
+                TypeError,
+            ):
 
                 formatted_date = str(
                     created_at
@@ -484,10 +560,13 @@ else:
             "",
         )
 
+
         history_rows.append(
             {
                 "Date": formatted_date,
-                "Type": backup_type.upper(),
+                "Type": str(
+                    backup_type
+                ).upper(),
                 "Filename": record.get(
                     "backup_filename",
                     "",
@@ -517,9 +596,11 @@ else:
 
 st.divider()
 
+
 st.markdown(
     "### 🔐 Backup Security"
 )
+
 
 st.warning(
     """
@@ -529,9 +610,12 @@ st.warning(
     financial information. Store them somewhere secure and do not
     upload them to public repositories or share them publicly.
 
-    The current backup service also includes the `app_users` table,
-    so backup files may contain password hashes. Never publish these
-    backup files or commit them to GitHub.
+    The backup service excludes the `app_users` authentication table.
+    Password hashes are therefore not intentionally included in
+    normal application backups.
+
+    Nevertheless, backup files contain financial and personal
+    application data and should still be treated as sensitive.
     """
 )
 
@@ -543,6 +627,7 @@ st.warning(
 st.markdown(
     "### ✅ Recommended Backup Practice"
 )
+
 
 st.markdown(
     """
@@ -556,6 +641,7 @@ st.markdown(
     6. Periodically test restoring a backup.
     """
 )
+
 
 st.caption(
     "💾 Your backup is only useful if you can safely restore it."

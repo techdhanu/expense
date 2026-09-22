@@ -7,8 +7,6 @@ from components.navigation import (
     logout,
 )
 
-from database.queries import get_table
-
 
 # =========================================================
 # PAGE CONFIGURATION
@@ -40,58 +38,39 @@ show_app_header(
 st.markdown("## ⚙️ Application Settings")
 
 st.caption(
-    "Configure how the expense tracker behaves."
+    "Configure your application preferences and review "
+    "important account and security information."
 )
 
 
-# ---------------------------------------------------------
-# SESSION STATE DEFAULTS
-# ---------------------------------------------------------
-
-if "allow_negative_balance" not in st.session_state:
-
-    st.session_state.allow_negative_balance = False
-
-
-# ---------------------------------------------------------
-# BALANCE SETTINGS
-# ---------------------------------------------------------
+# =========================================================
+# BALANCE RULES
+# =========================================================
 
 st.markdown("### 💰 Balance Rules")
 
-allow_negative = st.toggle(
-    "Allow negative account balances",
-    value=st.session_state.allow_negative_balance,
-    help=(
-        "When enabled, expenses can make an account balance "
-        "negative. When disabled, expenses should not exceed "
-        "the available account balance."
-    ),
+st.info(
+    """
+    **Financial balance rules**
+
+    Account balances are calculated from the recorded
+    financial transactions.
+
+    • Income increases the selected account.  
+    • Expenses decrease the selected account.  
+    • Transfers move money between accounts without changing
+      total balance.  
+    • Friend money held is tracked separately as a liability.  
+    • Money lent is tracked separately from expenses.  
+    • Financial amounts use exact decimal calculations.
+    """
 )
 
 
-if allow_negative != st.session_state.allow_negative_balance:
-
-    st.session_state.allow_negative_balance = allow_negative
-
-    st.success(
-        "Balance setting updated for this session."
-    )
-
-
-if allow_negative:
-
-    st.warning(
-        "⚠️ Negative balances are currently allowed. "
-        "Use this only when you intentionally want to "
-        "record spending beyond an account's available balance."
-    )
-
-else:
-
-    st.info(
-        "🛡️ Negative balances are disabled."
-    )
+st.caption(
+    "Balance validation is controlled by the transaction "
+    "and account services rather than by a page-level toggle."
+)
 
 
 st.divider()
@@ -104,18 +83,24 @@ st.divider()
 st.markdown("### 🔐 Security")
 
 st.info(
-    "Your application uses username/password authentication "
-    "with password hashing. Supabase secrets remain on the "
-    "server and should never be committed to GitHub."
+    """
+    Your application uses username/password authentication
+    with password hashing.
+
+    Supabase credentials are stored through Streamlit Secrets
+    and should never be committed to GitHub.
+    """
 )
 
 
 st.markdown("#### Current Session")
 
+
 username = st.session_state.get(
     "username",
     "Unknown user",
 )
+
 
 st.write(
     f"**Logged in as:** {username}"
@@ -140,9 +125,12 @@ st.divider()
 st.markdown("### 🛡️ Data Safety")
 
 st.info(
-    "Financial records are stored persistently in Supabase. "
-    "Use the Backup & Restore page to create downloadable "
-    "copies of your application data."
+    """
+    Financial records are stored persistently in Supabase.
+
+    Use the Backup & Restore page to create downloadable
+    copies of your supported application data.
+    """
 )
 
 
@@ -182,54 +170,21 @@ st.divider()
 
 st.markdown("### 👤 Account Information")
 
-try:
 
-    response = (
-        get_table("app_users")
-        .select(
-            "username,is_active,created_at"
-        )
-        .eq(
-            "id",
-            st.session_state.get("user_id"),
-        )
-        .limit(1)
-        .execute()
-    )
+st.write(
+    f"**Username:** {username}"
+)
 
-    if response.data:
 
-        user = response.data[0]
+st.write(
+    "**Session Status:** Active"
+)
 
-        st.write(
-            f"**Username:** {user.get('username', username)}"
-        )
 
-        status = (
-            "Active"
-            if user.get("is_active", False)
-            else "Inactive"
-        )
-
-        st.write(
-            f"**Account Status:** {status}"
-        )
-
-        created_at = user.get(
-            "created_at"
-        )
-
-        if created_at:
-
-            st.write(
-                f"**Account Created:** {created_at}"
-            )
-
-except Exception:
-
-    st.caption(
-        "Account details could not be loaded."
-    )
+st.caption(
+    "Account authentication and authorization are managed "
+    "through the application's authentication service."
+)
 
 
 st.divider()
@@ -240,6 +195,7 @@ st.divider()
 # =========================================================
 
 st.markdown("### ℹ️ Application Information")
+
 
 info_col1, info_col2 = st.columns(2)
 
@@ -255,6 +211,7 @@ with info_col1:
         - Secure password hashing
         - Transaction history
         - Financial reports
+        - Multi-user data isolation
         """
     )
 
@@ -269,6 +226,8 @@ with info_col2:
         - Transfers are not expenses
         - Friend money is a liability
         - Actual money excludes friend money held
+        - Money lent is not an expense
+        - Money returned is not income
         - Money calculations use exact decimals
         """
     )
@@ -278,13 +237,28 @@ st.divider()
 
 
 # =========================================================
-# IMPORTANT NOTE
+# IMPORTANT SECURITY NOTE
 # =========================================================
 
-st.caption(
-    "🔒 Never store bank passwords, ATM PINs, UPI PINs, "
-    "CVVs, or complete card numbers in this application."
+st.markdown(
+    "### 🔒 Security Reminder"
 )
+
+
+st.warning(
+    """
+    Never store bank passwords, ATM PINs, UPI PINs,
+    CVVs, or complete card numbers in this application.
+
+    Keep downloaded financial backups private and do not
+    commit them to GitHub or other public repositories.
+    """
+)
+
+
+# =========================================================
+# APPLICATION VERSION
+# =========================================================
 
 st.caption(
     "Version 1 • Personal Expense Tracker"

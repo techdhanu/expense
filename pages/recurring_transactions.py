@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from components.navigation import (
@@ -54,26 +54,107 @@ show_app_header(
 # =========================================================
 
 def money(value) -> Decimal:
-    """Safely convert a value to Decimal."""
-    return Decimal(str(value or "0.00"))
+    """
+    Safely convert a database/UI value to Decimal.
+
+    Financial calculations on this page must never use
+    floating-point arithmetic.
+    """
+
+    if value is None:
+        return Decimal("0.00")
+
+    try:
+
+        result = Decimal(
+            str(value)
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        return Decimal("0.00")
+
+    if not result.is_finite():
+
+        return Decimal("0.00")
+
+    return result
 
 
 def format_inr(value) -> str:
     """Format amount as INR."""
+
     return f"₹{money(value):,.2f}"
 
 
 def parse_date(value):
-    """Safely convert database date values."""
+    """Safely convert database date values to date."""
+
     if not value:
         return None
 
     try:
+
         return date.fromisoformat(
             str(value)[:10]
         )
-    except ValueError:
+
+    except (ValueError, TypeError):
+
         return None
+
+
+def parse_positive_amount(
+    value: str,
+    field_name: str = "amount",
+) -> Decimal:
+    """
+    Parse and validate a positive monetary amount.
+    """
+
+    clean_value = (
+        value or ""
+    ).strip()
+
+
+    if not clean_value:
+
+        raise ValueError(
+            f"Please enter an {field_name}."
+            if field_name.startswith(("a ", "an "))
+            else f"Please enter the {field_name}."
+        )
+
+
+    try:
+
+        amount = Decimal(
+            clean_value
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        raise ValueError(
+            f"Please enter a valid {field_name}."
+        )
+
+
+    if not amount.is_finite():
+
+        raise ValueError(
+            f"Please enter a valid {field_name}."
+        )
+
+
+    if amount <= Decimal("0.00"):
+
+        raise ValueError(
+            f"{field_name.capitalize()} "
+            "must be greater than ₹0."
+        )
+
+
+    return amount
 
 
 # =========================================================
@@ -85,13 +166,12 @@ try:
     accounts = get_all_accounts()
     categories = get_all_categories()
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        "Required account/category data could not be loaded."
+        "Required account and category data could not be loaded. "
+        "Please try again."
     )
-
-    st.caption(str(exc))
 
     st.stop()
 
@@ -157,9 +237,12 @@ with st.form(
     transaction_name = st.text_input(
         "Transaction Name",
         placeholder="Example: Netflix Subscription",
+        max_chars=100,
     )
 
+
     col1, col2 = st.columns(2)
+
 
     with col1:
 
@@ -176,6 +259,7 @@ with st.form(
                 "internal_transfer": "🔄 Internal Transfer",
             }[value],
         )
+
 
     with col2:
 
@@ -227,6 +311,7 @@ with st.form(
             if account["id"] != account_id
         ]
 
+
         if destination_options:
 
             destination_account_id = st.selectbox(
@@ -256,6 +341,7 @@ with st.form(
             category["id"]
             for category in categories
         ]
+
 
         if category_options:
 
@@ -292,12 +378,14 @@ with st.form(
 
     col3, col4 = st.columns(2)
 
+
     with col3:
 
         start_date = st.date_input(
             "Start Date",
             value=date.today(),
         )
+
 
     with col4:
 
@@ -312,7 +400,7 @@ with st.form(
         value=False,
         help=(
             "The current service stores this preference. "
-            "Automatic transaction execution will be handled "
+            "Automatic transaction execution is handled "
             "by the recurring-processing workflow."
         ),
     )
@@ -321,6 +409,7 @@ with st.form(
     notes = st.text_area(
         "Notes",
         placeholder="Optional notes...",
+        max_chars=1000,
         height=90,
     )
 
@@ -334,16 +423,20 @@ with st.form(
 
 if create_button:
 
-    if not transaction_name.strip():
+    clean_transaction_name = (
+        transaction_name or ""
+    ).strip()
+
+
+    clean_notes = (
+        notes or ""
+    ).strip()
+
+
+    if not clean_transaction_name:
 
         st.error(
             "Please enter a transaction name."
-        )
-
-    elif not amount_text.strip():
-
-        st.error(
-            "Please enter an amount."
         )
 
     elif account_id is None:
@@ -361,6 +454,15 @@ if create_button:
             "Please select a destination account."
         )
 
+    elif (
+        transaction_type == "internal_transfer"
+        and destination_account_id == account_id
+    ):
+
+        st.error(
+            "Source and destination accounts must be different."
+        )
+
     elif next_due_date < start_date:
 
         st.error(
@@ -371,58 +473,73 @@ if create_button:
 
         try:
 
-            amount = Decimal(
-                amount_text.strip()
+            amount = parse_positive_amount(
+                amount_text,
+                "amount",
             )
 
-            if amount <= Decimal("0.00"):
-
-                st.error(
-                    "Amount must be greater than ₹0."
-                )
-
-            else:
-
-                try:
-
-                    create_recurring_transaction(
-                        transaction_name=transaction_name,
-                        transaction_type=transaction_type,
-                        amount=amount,
-                        account_id=account_id,
-                        frequency=frequency,
-                        start_date=start_date,
-                        next_due_date=next_due_date,
-                        destination_account_id=destination_account_id,
-                        category_id=category_id,
-                        payment_method=payment_method,
-                        auto_create=auto_create,
-                        notes=notes,
-                    )
-
-                    st.success(
-                        "Recurring transaction created successfully."
-                    )
-
-                    st.rerun()
-
-                except ValueError as exc:
-
-                    st.error(
-                        str(exc)
-                    )
-
-                except Exception:
-
-                    st.error(
-                        "Recurring transaction could not be created."
-                    )
-
-        except InvalidOperation:
+        except ValueError as exc:
 
             st.error(
-                "Please enter a valid numeric amount."
+                str(exc)
             )
+
+        else:
+
+            try:
+
+                create_recurring_transaction(
+                    transaction_name=clean_transaction_name,
+                    transaction_type=transaction_type,
+                    amount=amount,
+                    account_id=account_id,
+                    frequency=frequency,
+                    start_date=start_date,
+                    next_due_date=next_due_date,
+                    destination_account_id=(
+                        destination_account_id
+                        if transaction_type == "internal_transfer"
+                        else None
+                    ),
+                    category_id=(
+                        category_id
+                        if transaction_type in {
+                            "expense",
+                            "income",
+                        }
+                        else None
+                    ),
+                    payment_method=(
+                        payment_method
+                        if transaction_type != "internal_transfer"
+                        else None
+                    ),
+                    auto_create=auto_create,
+                    notes=clean_notes or None,
+                )
+
+
+                st.success(
+                    "Recurring transaction created successfully."
+                )
+
+
+                st.rerun()
+
+
+            except ValueError as exc:
+
+                st.error(
+                    str(exc)
+                )
+
+
+            except Exception:
+
+                st.error(
+                    "Recurring transaction could not be created. "
+                    "Please try again."
+                )
 
 
 st.divider()
@@ -440,13 +557,12 @@ try:
         )
     )
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        "Recurring transactions could not be loaded."
+        "Recurring transactions could not be loaded. "
+        "Please try again."
     )
-
-    st.caption(str(exc))
 
     st.stop()
 
@@ -460,6 +576,7 @@ if not recurring_transactions:
     st.info(
         "No recurring transactions have been configured yet."
     )
+
 
     st.markdown(
         """
@@ -486,16 +603,19 @@ active_items = [
     if item.get("is_active") is True
 ]
 
+
 inactive_items = [
     item
     for item in recurring_transactions
     if item.get("is_active") is not True
 ]
 
+
 due_count = len(due_transactions)
 
 
 summary1, summary2, summary3 = st.columns(3)
+
 
 with summary1:
 
@@ -504,12 +624,14 @@ with summary1:
         len(active_items),
     )
 
+
 with summary2:
 
     st.metric(
         "Due",
         due_count,
     )
+
 
 with summary3:
 
@@ -541,48 +663,59 @@ else:
 
         recurring_id = item["id"]
 
+
         transaction_name = item.get(
             "transaction_name",
             "Unnamed",
         )
+
 
         transaction_type = item.get(
             "transaction_type",
             "",
         )
 
+
         amount = money(
             item.get("amount")
         )
+
 
         frequency = item.get(
             "frequency",
             "",
         )
 
+
         account_id = item.get(
             "account_id"
         )
+
 
         destination_id = item.get(
             "destination_account_id"
         )
 
+
         category_id = item.get(
             "category_id"
         )
+
 
         payment_method = item.get(
             "payment_method"
         )
 
+
         next_due = parse_date(
             item.get("next_due_date")
         )
 
+
         start_date_value = parse_date(
             item.get("start_date")
         )
+
 
         auto_create_value = item.get(
             "auto_create",
@@ -598,21 +731,18 @@ else:
 
             if next_due < date.today():
 
-                due_label = (
-                    "🔴 Overdue"
-                )
+                due_label = "🔴 Overdue"
 
             elif next_due == date.today():
 
-                due_label = (
-                    "🟠 Due today"
-                )
+                due_label = "🟠 Due today"
 
             else:
 
                 days_until = (
                     next_due - date.today()
                 ).days
+
 
                 if days_until <= 7:
 
@@ -622,9 +752,7 @@ else:
 
                 else:
 
-                    due_label = (
-                        "🟢 Scheduled"
-                    )
+                    due_label = "🟢 Scheduled"
 
         else:
 
@@ -653,6 +781,7 @@ else:
             f"### {type_icon} {transaction_name}"
         )
 
+
         st.caption(
             f"{due_label} • "
             f"{frequency.capitalize()} • "
@@ -666,6 +795,7 @@ else:
 
         col1, col2, col3 = st.columns(3)
 
+
         with col1:
 
             st.markdown("**Account**")
@@ -676,6 +806,7 @@ else:
                     "Unknown Account",
                 )
             )
+
 
         with col2:
 
@@ -693,6 +824,7 @@ else:
 
                 st.write("Not set")
 
+
         with col3:
 
             st.markdown("**Auto Create**")
@@ -708,11 +840,13 @@ else:
 
             transfer_col1, transfer_col2 = st.columns(2)
 
+
             with transfer_col1:
 
                 st.markdown(
                     "**From Account**"
                 )
+
 
                 st.write(
                     account_map.get(
@@ -721,11 +855,13 @@ else:
                     )
                 )
 
+
             with transfer_col2:
 
                 st.markdown(
                     "**To Account**"
                 )
+
 
                 st.write(
                     account_map.get(
@@ -738,6 +874,7 @@ else:
 
             detail_col1, detail_col2 = st.columns(2)
 
+
             with detail_col1:
 
                 if category_id:
@@ -746,12 +883,14 @@ else:
                         "**Category**"
                     )
 
+
                     st.write(
                         category_map.get(
                             category_id,
                             "Unknown Category",
                         )
                     )
+
 
             with detail_col2:
 
@@ -760,6 +899,7 @@ else:
                     st.markdown(
                         "**Payment Method**"
                     )
+
 
                     st.write(
                         payment_method
@@ -779,14 +919,17 @@ else:
             edit_name = st.text_input(
                 "Transaction Name",
                 value=transaction_name,
+                max_chars=100,
                 key=f"edit_name_{recurring_id}",
             )
+
 
             edit_amount_text = st.text_input(
                 "Amount",
                 value=f"{amount:.2f}",
                 key=f"edit_amount_{recurring_id}",
             )
+
 
             edit_frequency = st.selectbox(
                 "Frequency",
@@ -828,6 +971,7 @@ else:
             edit_notes = st.text_area(
                 "Notes",
                 value=item.get("notes") or "",
+                max_chars=1000,
                 key=f"edit_notes_{recurring_id}",
             )
 
@@ -838,16 +982,20 @@ else:
                 use_container_width=True,
             ):
 
-                if not edit_name.strip():
+                clean_edit_name = (
+                    edit_name or ""
+                ).strip()
+
+
+                clean_edit_notes = (
+                    edit_notes or ""
+                ).strip()
+
+
+                if not clean_edit_name:
 
                     st.error(
                         "Transaction name cannot be empty."
-                    )
-
-                elif not edit_amount_text.strip():
-
-                    st.error(
-                        "Amount is required."
                     )
 
                 elif edit_next_due < edit_start_date:
@@ -861,42 +1009,11 @@ else:
 
                     try:
 
-                        edit_amount = Decimal(
-                            edit_amount_text.strip()
+                        edit_amount = parse_positive_amount(
+                            edit_amount_text,
+                            "amount",
                         )
 
-                        if edit_amount <= Decimal("0.00"):
-
-                            st.error(
-                                "Amount must be greater than ₹0."
-                            )
-
-                        else:
-
-                            update_recurring_transaction(
-                                recurring_id,
-                                {
-                                    "transaction_name": edit_name,
-                                    "amount": edit_amount,
-                                    "frequency": edit_frequency,
-                                    "start_date": edit_start_date,
-                                    "next_due_date": edit_next_due,
-                                    "auto_create": edit_auto_create,
-                                    "notes": edit_notes,
-                                },
-                            )
-
-                            st.success(
-                                "Recurring transaction updated."
-                            )
-
-                            st.rerun()
-
-                    except InvalidOperation:
-
-                        st.error(
-                            "Please enter a valid amount."
-                        )
 
                     except ValueError as exc:
 
@@ -904,11 +1021,45 @@ else:
                             str(exc)
                         )
 
-                    except Exception:
+                    else:
 
-                        st.error(
-                            "Recurring transaction could not be updated."
-                        )
+                        try:
+
+                            update_recurring_transaction(
+                                recurring_id,
+                                {
+                                    "transaction_name": clean_edit_name,
+                                    "amount": edit_amount,
+                                    "frequency": edit_frequency,
+                                    "start_date": edit_start_date,
+                                    "next_due_date": edit_next_due,
+                                    "auto_create": edit_auto_create,
+                                    "notes": clean_edit_notes or None,
+                                },
+                            )
+
+
+                            st.success(
+                                "Recurring transaction updated."
+                            )
+
+
+                            st.rerun()
+
+
+                        except ValueError as exc:
+
+                            st.error(
+                                str(exc)
+                            )
+
+
+                        except Exception:
+
+                            st.error(
+                                "Recurring transaction could not be updated. "
+                                "Please try again."
+                            )
 
 
         # -------------------------------------------------
@@ -938,16 +1089,20 @@ else:
                         recurring_id
                     )
 
+
                     st.success(
                         "Recurring transaction deactivated."
                     )
 
+
                     st.rerun()
+
 
                 except Exception:
 
                     st.error(
-                        "Recurring transaction could not be deactivated."
+                        "Recurring transaction could not be deactivated. "
+                        "Please try again."
                     )
 
 
@@ -968,14 +1123,17 @@ if inactive_items:
 
             recurring_id = item["id"]
 
+
             transaction_name = item.get(
                 "transaction_name",
                 "Unnamed",
             )
 
+
             amount = money(
                 item.get("amount")
             )
+
 
             frequency = item.get(
                 "frequency",
@@ -986,6 +1144,7 @@ if inactive_items:
             st.markdown(
                 f"**{transaction_name}**"
             )
+
 
             st.caption(
                 f"{format_inr(amount)} • "
@@ -1005,16 +1164,20 @@ if inactive_items:
                         recurring_id
                     )
 
+
                     st.success(
                         "Recurring transaction activated."
                     )
 
+
                     st.rerun()
+
 
                 except Exception:
 
                     st.error(
-                        "Recurring transaction could not be activated."
+                        "Recurring transaction could not be activated. "
+                        "Please try again."
                     )
 
 
@@ -1027,6 +1190,7 @@ st.divider()
 st.markdown(
     "### ℹ️ How Recurring Transactions Work"
 )
+
 
 st.info(
     """
@@ -1044,6 +1208,7 @@ st.info(
     is explicitly created/processed.
     """
 )
+
 
 st.caption(
     "🔐 Financial records remain separate from recurring transaction templates."

@@ -9,8 +9,13 @@ from database.queries import get_table
 from services.authentication_service import get_current_user_id
 
 
+# ============================================================
+# BACKUP CONFIGURATION
+# ============================================================
+
 # Financial/application data only.
-# app_users is intentionally excluded because it contains authentication data.
+# app_users is intentionally excluded because it contains
+# authentication credentials.
 BACKUP_TABLES = [
     "accounts",
     "categories",
@@ -30,17 +35,29 @@ BACKUP_TABLES = [
 BACKUP_VERSION = "1.1"
 
 
+# ============================================================
+# AUTHENTICATED USER
+# ============================================================
+
 def _get_user_id() -> str:
-    """Return the authenticated user's ID."""
+    """
+    Return the currently authenticated user's ID.
+    """
 
     return get_current_user_id()
 
+
+# ============================================================
+# USER-SCOPED DATA ACCESS
+# ============================================================
 
 def _get_user_table_data(
     table_name: str,
     user_id: str,
 ) -> list[dict]:
-    """Return only records belonging to the current user."""
+    """
+    Return only records belonging to the current user.
+    """
 
     response = (
         get_table(table_name)
@@ -51,6 +68,10 @@ def _get_user_table_data(
 
     return response.data or []
 
+
+# ============================================================
+# COLLECT BACKUP
+# ============================================================
 
 def collect_backup_data() -> dict:
     """
@@ -81,11 +102,16 @@ def collect_backup_data() -> dict:
     return backup_data
 
 
+# ============================================================
+# JSON BACKUP
+# ============================================================
+
 def create_json_backup(
     output_directory: str = "backups",
 ) -> Path:
     """
-    Create a JSON backup containing only the current user's data.
+    Create a JSON backup containing only the
+    current user's data.
     """
 
     _get_user_id()
@@ -113,6 +139,7 @@ def create_json_backup(
         "w",
         encoding="utf-8",
     ) as file:
+
         json.dump(
             backup_data,
             file,
@@ -121,6 +148,8 @@ def create_json_backup(
             default=str,
         )
 
+    # backup_history itself is not counted
+    # as financial/application data.
     record_count = sum(
         len(records)
         for table_name, records
@@ -136,6 +165,10 @@ def create_json_backup(
 
     return file_path
 
+
+# ============================================================
+# CSV BACKUPS
+# ============================================================
 
 def create_csv_backups(
     output_directory: str = "backups",
@@ -160,6 +193,7 @@ def create_csv_backups(
     )
 
     created_files = []
+
     total_record_count = 0
 
     for table_name in BACKUP_TABLES:
@@ -184,7 +218,7 @@ def create_csv_backups(
 
         created_files.append(file_path)
 
-        # Count database records, not generated files.
+        # Do not count backup_history itself.
         if table_name != "backup_history":
             total_record_count += len(records)
 
@@ -196,6 +230,10 @@ def create_csv_backups(
 
     return created_files
 
+
+# ============================================================
+# BACKUP HISTORY
+# ============================================================
 
 def record_backup_history(
     backup_type: str,
@@ -264,10 +302,16 @@ def get_backup_history() -> list[dict]:
     return response.data or []
 
 
+# ============================================================
+# BACKUP VALIDATION
+# ============================================================
+
 def _validate_backup_tables(
     tables: dict,
 ) -> None:
-    """Validate that the backup contains the supported tables."""
+    """
+    Validate that the backup contains all supported tables.
+    """
 
     if not isinstance(tables, dict):
         raise ValueError(
@@ -287,14 +331,20 @@ def _validate_backup_tables(
         )
 
     for table_name in BACKUP_TABLES:
+
         if not isinstance(
             tables[table_name],
             list,
         ):
             raise ValueError(
-                f"Invalid data format for table: {table_name}"
+                f"Invalid data format for table: "
+                f"{table_name}"
             )
 
+
+# ============================================================
+# BACKUP USER VALIDATION
+# ============================================================
 
 def _validate_backup_user(
     backup_data: dict,
@@ -325,77 +375,24 @@ def _validate_backup_user(
     return current_user_id
 
 
-def restore_json_backup(
-    backup_file: str | Path,
-) -> dict:
+# ============================================================
+# VALIDATE EVERY RECORD USER
+# ============================================================
+
+def _validate_all_record_users(
+    tables: dict,
+    current_user_id: str,
+) -> None:
     """
-    Restore a JSON backup for the currently
-    authenticated user.
+    Ensure every record inside the backup belongs
+    to the currently authenticated user.
 
-    The database RPC performs the actual atomic restore.
+    This provides application-level protection before
+    the database RPC is called.
     """
 
-    current_user_id = _get_user_id()
-
-    backup_path = Path(backup_file)
-
-    if not backup_path.exists():
-        raise FileNotFoundError(
-            f"Backup file not found: {backup_path}"
-        )
-
-    if backup_path.suffix.lower() != ".json":
-        raise ValueError(
-            "Only JSON backup files can be restored."
-        )
-
-    try:
-        with backup_path.open(
-            "r",
-            encoding="utf-8",
-        ) as file:
-            backup_data = json.load(file)
-
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            "The backup file contains invalid JSON."
-        ) from exc
-
-    if not isinstance(
-        backup_data,
-        dict,
-    ):
-        raise ValueError(
-            "Invalid backup format."
-        )
-
-    if backup_data.get(
-        "backup_version"
-    ) != BACKUP_VERSION:
-        raise ValueError(
-            "Unsupported backup version."
-        )
-
-    _validate_backup_user(
-        backup_data
-    )
-
-    tables = backup_data.get(
-        "tables"
-    )
-
-    _validate_backup_tables(
-        tables
-    )
-
-    # Explicitly force the authenticated user's ID.
-    # This prevents a crafted backup from attempting
-    # to restore records under another user.
-    backup_data["user_id"] = current_user_id
-
-    # Also validate that every backed-up record has
-    # the same user_id.
     for table_name in BACKUP_TABLES:
+
         for record in tables[table_name]:
 
             if not isinstance(
@@ -403,7 +400,8 @@ def restore_json_backup(
                 dict,
             ):
                 raise ValueError(
-                    f"Invalid record in table: {table_name}"
+                    f"Invalid record in table: "
+                    f"{table_name}"
                 )
 
             record_user_id = record.get(
@@ -420,26 +418,172 @@ def restore_json_backup(
                 current_user_id
             ):
                 raise ValueError(
-                    f"Backup contains data belonging "
-                    f"to another user in table: {table_name}"
+                    "Backup contains data belonging "
+                    f"to another user in table: "
+                    f"{table_name}"
                 )
 
+
+# ============================================================
+# RESTORE JSON BACKUP
+# ============================================================
+
+def restore_json_backup(
+    backup_file: str | Path,
+) -> dict:
+    """
+    Restore a JSON backup for the currently
+    authenticated user.
+
+    The database RPC performs the actual atomic restore.
+
+    Security layers:
+
+    1. Current application user is identified.
+    2. Backup version is validated.
+    3. Backup top-level user_id is validated.
+    4. Every individual record user_id is validated.
+    5. Current user ID is explicitly passed to the
+       database RPC.
+    6. Database performs the atomic restore.
+    """
+
+    current_user_id = _get_user_id()
+
+    backup_path = Path(backup_file)
+
+    # --------------------------------------------------------
+    # File validation
+    # --------------------------------------------------------
+
+    if not backup_path.exists():
+        raise FileNotFoundError(
+            f"Backup file not found: {backup_path}"
+        )
+
+    if backup_path.suffix.lower() != ".json":
+        raise ValueError(
+            "Only JSON backup files can be restored."
+        )
+
+    # --------------------------------------------------------
+    # Read JSON
+    # --------------------------------------------------------
+
     try:
+
+        with backup_path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+
+            backup_data = json.load(file)
+
+    except json.JSONDecodeError as exc:
+
+        raise ValueError(
+            "The backup file contains invalid JSON."
+        ) from exc
+
+    # --------------------------------------------------------
+    # Top-level validation
+    # --------------------------------------------------------
+
+    if not isinstance(
+        backup_data,
+        dict,
+    ):
+        raise ValueError(
+            "Invalid backup format."
+        )
+
+    # --------------------------------------------------------
+    # Backup version
+    # --------------------------------------------------------
+
+    if backup_data.get(
+        "backup_version"
+    ) != BACKUP_VERSION:
+
+        raise ValueError(
+            "Unsupported backup version."
+        )
+
+    # --------------------------------------------------------
+    # Backup user
+    # --------------------------------------------------------
+
+    _validate_backup_user(
+        backup_data
+    )
+
+    # --------------------------------------------------------
+    # Tables
+    # --------------------------------------------------------
+
+    tables = backup_data.get(
+        "tables"
+    )
+
+    _validate_backup_tables(
+        tables
+    )
+
+    # --------------------------------------------------------
+    # Force authenticated user ID
+    # --------------------------------------------------------
+    #
+    # Even though the backup was already validated,
+    # explicitly overwrite the top-level value with the
+    # authenticated user ID before sending it to PostgreSQL.
+
+    backup_data["user_id"] = current_user_id
+
+    # --------------------------------------------------------
+    # Validate every individual record
+    # --------------------------------------------------------
+
+    _validate_all_record_users(
+        tables,
+        current_user_id,
+    )
+
+    # --------------------------------------------------------
+    # Atomic database restore
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    # The corrected PostgreSQL function expects TWO arguments:
+    #
+    #     backup_data
+    #     p_user_id
+    #
+    # The second value is supplied independently from the
+    # authenticated Streamlit session.
+
+    try:
+
         response = (
             get_supabase_client()
             .rpc(
                 "restore_expense_tracker_backup",
                 {
                     "backup_data": backup_data,
+                    "p_user_id": current_user_id,
                 },
             )
             .execute()
         )
 
     except Exception as exc:
+
         raise RuntimeError(
             f"Atomic backup restore failed: {exc}"
         ) from exc
+
+    # --------------------------------------------------------
+    # Validate RPC result
+    # --------------------------------------------------------
 
     if not response.data:
         raise RuntimeError(
@@ -448,10 +592,12 @@ def restore_json_backup(
 
     result = response.data
 
+    # Supabase may return a list depending on RPC response.
     if isinstance(
         result,
         list,
     ):
+
         result = (
             result[0]
             if result

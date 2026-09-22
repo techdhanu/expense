@@ -1,9 +1,9 @@
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from database.queries import get_table
+from database.client import get_supabase_client
 from services.authentication_service import get_current_user_id
-from services.transaction_service import create_transaction
 from utils.validators import validate_amount
 
 
@@ -12,14 +12,30 @@ from utils.validators import validate_amount
 # ============================================================
 
 def _decimal(value) -> Decimal:
-    """Convert a value safely to Decimal."""
-    return Decimal(str(value or "0.00"))
+    """Convert a database or application value safely to Decimal."""
+
+    try:
+        if value is None or value == "":
+            return Decimal("0.00")
+
+        result = Decimal(str(value))
+
+        if not result.is_finite():
+            raise ValueError("Financial amount must be finite.")
+
+        return result
+
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            "Invalid financial amount."
+        ) from exc
 
 
 def _get_owned_person(person_id: str) -> dict:
     """
     Return a person belonging to the currently logged-in user.
     """
+
     if not person_id:
         raise ValueError("Person ID is required.")
 
@@ -46,6 +62,7 @@ def _validate_owned_account(account_id: str) -> dict:
     """
     Return an active account belonging to the current user.
     """
+
     if not account_id:
         raise ValueError("Account ID is required.")
 
@@ -67,6 +84,28 @@ def _validate_owned_account(account_id: str) -> dict:
         )
 
     return response.data[0]
+
+
+def _rpc_result(response):
+    """
+    Normalize Supabase RPC response data.
+
+    PostgreSQL functions return a JSON object, which the
+    Supabase Python client normally exposes as a dict.
+    """
+
+    data = getattr(response, "data", None)
+
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(data, list) and data:
+        if isinstance(data[0], dict):
+            return data[0]
+
+    raise RuntimeError(
+        "The database operation did not return a valid result."
+    )
 
 
 # ============================================================
@@ -130,9 +169,23 @@ def create_person(
     if not name:
         raise ValueError("Person name is required.")
 
+    if len(name) > 100:
+        raise ValueError(
+            "Person name cannot exceed 100 characters."
+        )
+
+    if notes is not None:
+        notes = notes.strip()
+
+        if len(notes) > 500:
+            raise ValueError(
+                "Person notes cannot exceed 500 characters."
+            )
+
     # --------------------------------------------------------
     # Duplicate check is user-scoped
     # --------------------------------------------------------
+
     existing = (
         get_table("people")
         .select("id")
@@ -153,11 +206,7 @@ def create_person(
             {
                 "user_id": user_id,
                 "name": name,
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else None
-                ),
+                "notes": notes or None,
             }
         )
         .execute()
@@ -188,71 +237,107 @@ def record_money_received(
 
     This increases the bank account balance but is NOT
     personal income.
+
+    The transaction and friend-money liability record are
+    created atomically inside PostgreSQL.
     """
 
     # --------------------------------------------------------
-    # Validate ownership
+    # Validate ownership before calling the RPC
     # --------------------------------------------------------
+
     person = _get_owned_person(person_id)
+
     _validate_owned_account(account_id)
 
     # --------------------------------------------------------
     # Validate amount
     # --------------------------------------------------------
+
     amount = validate_amount(amount)
 
     # --------------------------------------------------------
-    # Create transaction
+    # Validate dates
     # --------------------------------------------------------
-    transaction = create_transaction(
-        transaction_date=received_date,
-        transaction_type="friend_money_received",
-        amount=amount,
-        source_account_id=account_id,
-        person_id=person_id,
-        description=f"Money received from {person['name']}",
-        notes=notes,
-    )
+
+    if not isinstance(received_date, date):
+        raise ValueError(
+            "Received date is invalid."
+        )
+
+    if (
+        expected_return_date is not None
+        and not isinstance(expected_return_date, date)
+    ):
+        raise ValueError(
+            "Expected return date is invalid."
+        )
+
+    if (
+        expected_return_date is not None
+        and expected_return_date < received_date
+    ):
+        raise ValueError(
+            "Expected return date cannot be before received date."
+        )
+
+    # --------------------------------------------------------
+    # Validate notes
+    # --------------------------------------------------------
+
+    if notes is not None:
+        notes = notes.strip()
+
+        if len(notes) > 500:
+            raise ValueError(
+                "Notes cannot exceed 500 characters."
+            )
 
     user_id = get_current_user_id()
 
     # --------------------------------------------------------
-    # Create friend-money record
+    # Atomic PostgreSQL operation
     # --------------------------------------------------------
-    response = (
-        get_table("friends_money")
-        .insert(
-            {
-                "user_id": user_id,
-                "person_id": person_id,
-                "transaction_id": transaction["id"],
-                "account_id": account_id,
-                "amount_received": str(amount),
-                "amount_returned": "0.00",
-                "received_date": received_date.isoformat(),
-                "expected_return_date": (
-                    expected_return_date.isoformat()
-                    if expected_return_date
-                    else None
-                ),
-                "status": "holding",
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else None
-                ),
-            }
-        )
-        .execute()
-    )
 
-    if not response.data:
+    response = get_supabase_client().rpc(
+        "record_friend_money_received_atomic",
+        {
+            "p_person_id": person_id,
+            "p_account_id": account_id,
+            "p_amount": str(amount),
+            "p_received_date": received_date.isoformat(),
+            "p_expected_return_date": (
+                expected_return_date.isoformat()
+                if expected_return_date
+                else None
+            ),
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
+
+    result = _rpc_result(response)
+
+    # --------------------------------------------------------
+    # Ensure returned person still belongs to current user
+    # --------------------------------------------------------
+
+    if result.get("person_id") != person_id:
         raise RuntimeError(
-            "Friend money record could not be created."
+            "Database returned an unexpected person."
         )
 
-    return response.data[0]
+    if result.get("account_id") != account_id:
+        raise RuntimeError(
+            "Database returned an unexpected account."
+        )
 
+    return result
+
+
+# ============================================================
+# FRIEND MONEY RECORDS
+# ============================================================
 
 def get_friend_money_records() -> list[dict]:
     """Return all friend-money records for the current user."""
@@ -278,13 +363,28 @@ def get_total_friend_money_held() -> Decimal:
     total = Decimal("0.00")
 
     for record in records:
-        total += (
-            _decimal(record.get("amount_received"))
-            - _decimal(record.get("amount_returned"))
+
+        received = _decimal(
+            record.get("amount_received")
         )
 
-    return total.quantize(Decimal("0.01"))
+        returned = _decimal(
+            record.get("amount_returned")
+        )
 
+        outstanding = received - returned
+
+        if outstanding > Decimal("0.00"):
+            total += outstanding
+
+    return total.quantize(
+        Decimal("0.01")
+    )
+
+
+# ============================================================
+# FRIEND MONEY RETURNED
+# ============================================================
 
 def record_money_returned(
     friend_money_id: str,
@@ -294,17 +394,35 @@ def record_money_returned(
 ) -> dict:
     """
     Record money returned to a friend.
+
+    The return transaction and liability update are performed
+    atomically inside PostgreSQL.
     """
 
     amount = validate_amount(amount)
+
     user_id = get_current_user_id()
 
+    if not isinstance(return_date, date):
+        raise ValueError(
+            "Return date is invalid."
+        )
+
+    if notes is not None:
+        notes = notes.strip()
+
+        if len(notes) > 500:
+            raise ValueError(
+                "Notes cannot exceed 500 characters."
+            )
+
     # --------------------------------------------------------
-    # Get ONLY current user's record
+    # Verify record belongs to current user before RPC
     # --------------------------------------------------------
+
     response = (
         get_table("friends_money")
-        .select("*")
+        .select("id,user_id")
         .eq("id", friend_money_id)
         .eq("user_id", user_id)
         .limit(1)
@@ -316,96 +434,44 @@ def record_money_returned(
             "Friend money record not found."
         )
 
-    record = response.data[0]
-
-    received = _decimal(
-        record.get("amount_received")
-    )
-
-    already_returned = _decimal(
-        record.get("amount_returned")
-    )
-
-    outstanding = received - already_returned
-
-    if outstanding <= Decimal("0.00"):
-        raise ValueError(
-            "This friend-money record has already been fully returned."
-        )
-
-    if amount > outstanding:
-        raise ValueError(
-            "Return amount cannot exceed outstanding friend money."
-        )
-
     # --------------------------------------------------------
-    # Ownership validation
+    # Atomic PostgreSQL operation
     # --------------------------------------------------------
-    person = _get_owned_person(
-        record["person_id"]
-    )
 
-    _validate_owned_account(
-        record["account_id"]
-    )
+    rpc_response = get_supabase_client().rpc(
+        "record_friend_money_returned_atomic",
+        {
+            "p_friend_money_id": friend_money_id,
+            "p_amount": str(amount),
+            "p_return_date": return_date.isoformat(),
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
 
-    # --------------------------------------------------------
-    # Create return transaction
-    # --------------------------------------------------------
-    transaction = create_transaction(
-        transaction_date=return_date,
-        transaction_type="friend_money_returned",
-        amount=amount,
-        source_account_id=record["account_id"],
-        person_id=record["person_id"],
-        description=f"Money returned to {person['name']}",
-        notes=notes,
-    )
+    result = _rpc_result(rpc_response)
 
-    new_returned = already_returned + amount
-
-    if new_returned == received:
-        status = "fully_returned"
-    else:
-        status = "partially_returned"
-
-    # --------------------------------------------------------
-    # Update ONLY current user's record
-    # --------------------------------------------------------
-    updated = (
-        get_table("friends_money")
-        .update(
-            {
-                "amount_returned": str(new_returned),
-                "status": status,
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else record.get("notes")
-                ),
-            }
-        )
-        .eq("id", friend_money_id)
-        .eq("user_id", user_id)
-        .execute()
-    )
-
-    if not updated.data:
+    if result.get("id") != friend_money_id:
         raise RuntimeError(
-            "Friend money record could not be updated."
+            "Database returned an unexpected friend-money record."
         )
 
-    return updated.data[0]
+    return result
 
+
+# ============================================================
+# FRIEND MONEY UPDATE
+# ============================================================
 
 def update_friend_money(
     friend_money_id: str,
     updates: dict,
 ) -> dict:
     """
-    Update a friend-money record.
+    Update editable non-financial fields.
 
-    Only editable non-financial fields are allowed.
+    Financial amounts and return amounts are intentionally
+    not editable.
     """
 
     if not updates:
@@ -416,8 +482,9 @@ def update_friend_money(
     user_id = get_current_user_id()
 
     # --------------------------------------------------------
-    # Get ONLY current user's record
+    # Get current user's record
     # --------------------------------------------------------
+
     response = (
         get_table("friends_money")
         .select("*")
@@ -433,6 +500,10 @@ def update_friend_money(
         )
 
     record = response.data[0]
+
+    # --------------------------------------------------------
+    # Allowed fields
+    # --------------------------------------------------------
 
     allowed_fields = {
         "expected_return_date",
@@ -446,7 +517,9 @@ def update_friend_money(
     if unexpected_fields:
         raise ValueError(
             "Unsupported friend-money field(s): "
-            + ", ".join(sorted(unexpected_fields))
+            + ", ".join(
+                sorted(unexpected_fields)
+            )
         )
 
     friend_updates = {
@@ -455,23 +528,68 @@ def update_friend_money(
         if key in allowed_fields
     }
 
+    # --------------------------------------------------------
+    # Validate expected return date
+    # --------------------------------------------------------
+
     if "expected_return_date" in friend_updates:
+
         value = friend_updates[
             "expected_return_date"
         ]
 
-        friend_updates["expected_return_date"] = (
+        if value is not None and not isinstance(value, date):
+            raise ValueError(
+                "Expected return date is invalid."
+            )
+
+        received_date = record.get(
+            "received_date"
+        )
+
+        if (
+            value is not None
+            and received_date
+            and value.isoformat() < str(received_date)
+        ):
+            raise ValueError(
+                "Expected return date cannot be before received date."
+            )
+
+        friend_updates[
+            "expected_return_date"
+        ] = (
             value.isoformat()
             if value
             else None
         )
 
+    # --------------------------------------------------------
+    # Validate notes
+    # --------------------------------------------------------
+
     if "notes" in friend_updates:
+
+        notes = friend_updates["notes"]
+
+        if notes is not None:
+
+            notes = notes.strip()
+
+            if len(notes) > 500:
+                raise ValueError(
+                    "Notes cannot exceed 500 characters."
+                )
+
         friend_updates["notes"] = (
-            friend_updates["notes"].strip()
-            if friend_updates["notes"]
+            notes or None
+            if notes is not None
             else None
         )
+
+    # --------------------------------------------------------
+    # Update friend-money record
+    # --------------------------------------------------------
 
     if friend_updates:
 
@@ -490,17 +608,18 @@ def update_friend_money(
 
     # --------------------------------------------------------
     # Synchronize linked transaction notes
+    #
+    # This is intentionally kept user-scoped.
     # --------------------------------------------------------
+
     if "notes" in updates:
 
-        (
+        transaction_update = (
             get_table("transactions")
             .update(
                 {
-                    "notes": (
-                        updates["notes"].strip()
-                        if updates["notes"]
-                        else None
+                    "notes": friend_updates.get(
+                        "notes"
                     )
                 }
             )
@@ -515,9 +634,15 @@ def update_friend_money(
             .execute()
         )
 
+        if not transaction_update.data:
+            raise RuntimeError(
+                "Linked transaction could not be updated."
+            )
+
     # --------------------------------------------------------
-    # Return current user's final record
+    # Return final record
     # --------------------------------------------------------
+
     final_response = (
         get_table("friends_money")
         .select("*")
@@ -551,69 +676,104 @@ def record_money_lent(
     Record money lent to a friend.
 
     This decreases the account balance but is NOT an expense.
-    The amount becomes a receivable from the friend.
+
+    The transaction and receivable record are created
+    atomically inside PostgreSQL.
     """
 
     # --------------------------------------------------------
     # Validate ownership
     # --------------------------------------------------------
+
     person = _get_owned_person(person_id)
+
     _validate_owned_account(account_id)
+
+    # --------------------------------------------------------
+    # Validate amount
+    # --------------------------------------------------------
 
     amount = validate_amount(amount)
 
     # --------------------------------------------------------
-    # Create transaction
+    # Validate dates
     # --------------------------------------------------------
-    transaction = create_transaction(
-        transaction_date=lent_date,
-        transaction_type="friend_money_lent",
-        amount=amount,
-        source_account_id=account_id,
-        person_id=person_id,
-        description=f"Money lent to {person['name']}",
-        notes=notes,
-    )
+
+    if not isinstance(lent_date, date):
+        raise ValueError(
+            "Lent date is invalid."
+        )
+
+    if (
+        expected_return_date is not None
+        and not isinstance(expected_return_date, date)
+    ):
+        raise ValueError(
+            "Expected return date is invalid."
+        )
+
+    if (
+        expected_return_date is not None
+        and expected_return_date < lent_date
+    ):
+        raise ValueError(
+            "Expected return date cannot be before lent date."
+        )
+
+    # --------------------------------------------------------
+    # Validate notes
+    # --------------------------------------------------------
+
+    if notes is not None:
+
+        notes = notes.strip()
+
+        if len(notes) > 500:
+            raise ValueError(
+                "Notes cannot exceed 500 characters."
+            )
 
     user_id = get_current_user_id()
 
     # --------------------------------------------------------
-    # Create receivable record
+    # Atomic PostgreSQL operation
     # --------------------------------------------------------
-    response = (
-        get_table("money_lent")
-        .insert(
-            {
-                "user_id": user_id,
-                "person_id": person_id,
-                "transaction_id": transaction["id"],
-                "account_id": account_id,
-                "amount_lent": str(amount),
-                "amount_returned": "0.00",
-                "lent_date": lent_date.isoformat(),
-                "expected_return_date": (
-                    expected_return_date.isoformat()
-                    if expected_return_date
-                    else None
-                ),
-                "status": "lent",
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else None
-                ),
-            }
-        )
-        .execute()
-    )
 
-    if not response.data:
+    response = get_supabase_client().rpc(
+        "record_money_lent_atomic",
+        {
+            "p_person_id": person_id,
+            "p_account_id": account_id,
+            "p_amount": str(amount),
+            "p_lent_date": lent_date.isoformat(),
+            "p_expected_return_date": (
+                expected_return_date.isoformat()
+                if expected_return_date
+                else None
+            ),
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
+
+    result = _rpc_result(response)
+
+    if result.get("person_id") != person_id:
         raise RuntimeError(
-            "Money lent record could not be created."
+            "Database returned an unexpected person."
         )
 
-    return response.data[0]
+    if result.get("account_id") != account_id:
+        raise RuntimeError(
+            "Database returned an unexpected account."
+        )
 
+    return result
+
+
+# ============================================================
+# MONEY LENT RECORDS
+# ============================================================
 
 def get_money_lent_records() -> list[dict]:
     """Return all money-lent records for the current user."""
@@ -639,13 +799,28 @@ def get_total_money_lent_outstanding() -> Decimal:
     total = Decimal("0.00")
 
     for record in records:
-        total += (
-            _decimal(record.get("amount_lent"))
-            - _decimal(record.get("amount_returned"))
+
+        lent = _decimal(
+            record.get("amount_lent")
         )
 
-    return total.quantize(Decimal("0.01"))
+        returned = _decimal(
+            record.get("amount_returned")
+        )
 
+        outstanding = lent - returned
+
+        if outstanding > Decimal("0.00"):
+            total += outstanding
+
+    return total.quantize(
+        Decimal("0.01")
+    )
+
+
+# ============================================================
+# MONEY LENT RETURNED
+# ============================================================
 
 def record_money_lent_returned(
     money_lent_id: str,
@@ -656,18 +831,35 @@ def record_money_lent_returned(
     """
     Record money returned by a friend.
 
-    This increases the user's account balance but is NOT income.
+    The return transaction and receivable update are performed
+    atomically inside PostgreSQL.
     """
 
     amount = validate_amount(amount)
+
     user_id = get_current_user_id()
 
+    if not isinstance(return_date, date):
+        raise ValueError(
+            "Return date is invalid."
+        )
+
+    if notes is not None:
+
+        notes = notes.strip()
+
+        if len(notes) > 500:
+            raise ValueError(
+                "Notes cannot exceed 500 characters."
+            )
+
     # --------------------------------------------------------
-    # Get ONLY current user's receivable
+    # Verify record belongs to current user
     # --------------------------------------------------------
+
     response = (
         get_table("money_lent")
-        .select("*")
+        .select("id,user_id")
         .eq("id", money_lent_id)
         .eq("user_id", user_id)
         .limit(1)
@@ -679,89 +871,34 @@ def record_money_lent_returned(
             "Money lent record not found."
         )
 
-    record = response.data[0]
-
-    amount_lent = _decimal(
-        record.get("amount_lent")
-    )
-
-    already_returned = _decimal(
-        record.get("amount_returned")
-    )
-
-    outstanding = amount_lent - already_returned
-
-    if outstanding <= Decimal("0.00"):
-        raise ValueError(
-            "This money-lent record has already been fully returned."
-        )
-
-    if amount > outstanding:
-        raise ValueError(
-            "Return amount cannot exceed outstanding lent money."
-        )
-
     # --------------------------------------------------------
-    # Ownership validation
+    # Atomic PostgreSQL operation
     # --------------------------------------------------------
-    person = _get_owned_person(
-        record["person_id"]
-    )
 
-    _validate_owned_account(
-        record["account_id"]
-    )
+    rpc_response = get_supabase_client().rpc(
+        "record_money_lent_returned_atomic",
+        {
+            "p_money_lent_id": money_lent_id,
+            "p_amount": str(amount),
+            "p_return_date": return_date.isoformat(),
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
 
-    # --------------------------------------------------------
-    # Create return transaction
-    # --------------------------------------------------------
-    transaction = create_transaction(
-        transaction_date=return_date,
-        transaction_type="friend_money_lent_returned",
-        amount=amount,
-        source_account_id=record["account_id"],
-        person_id=record["person_id"],
-        description=(
-            f"Money received back from {person['name']}"
-        ),
-        notes=notes,
-    )
+    result = _rpc_result(rpc_response)
 
-    new_returned = already_returned + amount
-
-    if new_returned == amount_lent:
-        status = "fully_returned"
-    else:
-        status = "partially_returned"
-
-    # --------------------------------------------------------
-    # Update ONLY current user's record
-    # --------------------------------------------------------
-    updated = (
-        get_table("money_lent")
-        .update(
-            {
-                "amount_returned": str(new_returned),
-                "status": status,
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else record.get("notes")
-                ),
-            }
-        )
-        .eq("id", money_lent_id)
-        .eq("user_id", user_id)
-        .execute()
-    )
-
-    if not updated.data:
+    if result.get("id") != money_lent_id:
         raise RuntimeError(
-            "Money lent record could not be updated."
+            "Database returned an unexpected money-lent record."
         )
 
-    return updated.data[0]
+    return result
 
+
+# ============================================================
+# MONEY LENT UPDATE
+# ============================================================
 
 def update_money_lent(
     money_lent_id: str,
@@ -782,8 +919,9 @@ def update_money_lent(
     user_id = get_current_user_id()
 
     # --------------------------------------------------------
-    # Get ONLY current user's record
+    # Get current user's record
     # --------------------------------------------------------
+
     response = (
         get_table("money_lent")
         .select("*")
@@ -800,6 +938,10 @@ def update_money_lent(
 
     record = response.data[0]
 
+    # --------------------------------------------------------
+    # Allowed fields
+    # --------------------------------------------------------
+
     allowed_fields = {
         "expected_return_date",
         "notes",
@@ -812,7 +954,9 @@ def update_money_lent(
     if unexpected_fields:
         raise ValueError(
             "Unsupported money-lent field(s): "
-            + ", ".join(sorted(unexpected_fields))
+            + ", ".join(
+                sorted(unexpected_fields)
+            )
         )
 
     lent_updates = {
@@ -821,23 +965,68 @@ def update_money_lent(
         if key in allowed_fields
     }
 
+    # --------------------------------------------------------
+    # Validate expected return date
+    # --------------------------------------------------------
+
     if "expected_return_date" in lent_updates:
+
         value = lent_updates[
             "expected_return_date"
         ]
 
-        lent_updates["expected_return_date"] = (
+        if value is not None and not isinstance(value, date):
+            raise ValueError(
+                "Expected return date is invalid."
+            )
+
+        lent_date = record.get(
+            "lent_date"
+        )
+
+        if (
+            value is not None
+            and lent_date
+            and value.isoformat() < str(lent_date)
+        ):
+            raise ValueError(
+                "Expected return date cannot be before lent date."
+            )
+
+        lent_updates[
+            "expected_return_date"
+        ] = (
             value.isoformat()
             if value
             else None
         )
 
+    # --------------------------------------------------------
+    # Validate notes
+    # --------------------------------------------------------
+
     if "notes" in lent_updates:
+
+        notes = lent_updates["notes"]
+
+        if notes is not None:
+
+            notes = notes.strip()
+
+            if len(notes) > 500:
+                raise ValueError(
+                    "Notes cannot exceed 500 characters."
+                )
+
         lent_updates["notes"] = (
-            lent_updates["notes"].strip()
-            if lent_updates["notes"]
+            notes or None
+            if notes is not None
             else None
         )
+
+    # --------------------------------------------------------
+    # Update receivable
+    # --------------------------------------------------------
 
     if lent_updates:
 
@@ -857,16 +1046,15 @@ def update_money_lent(
     # --------------------------------------------------------
     # Synchronize linked transaction notes
     # --------------------------------------------------------
+
     if "notes" in updates:
 
-        (
+        transaction_update = (
             get_table("transactions")
             .update(
                 {
-                    "notes": (
-                        updates["notes"].strip()
-                        if updates["notes"]
-                        else None
+                    "notes": lent_updates.get(
+                        "notes"
                     )
                 }
             )
@@ -881,9 +1069,15 @@ def update_money_lent(
             .execute()
         )
 
+        if not transaction_update.data:
+            raise RuntimeError(
+                "Linked transaction could not be updated."
+            )
+
     # --------------------------------------------------------
-    # Return current user's final record
+    # Return final record
     # --------------------------------------------------------
+
     final_response = (
         get_table("money_lent")
         .select("*")

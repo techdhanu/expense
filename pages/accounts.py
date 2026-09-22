@@ -45,13 +45,13 @@ show_app_header(
 try:
 
     accounts = get_all_accounts()
-
     account_balances = get_all_account_balances()
 
-except Exception as exc:
+except Exception:
 
     st.error(
-        f"Unable to load account information.\n\n{exc}"
+        "Unable to load account information. "
+        "Please try again."
     )
 
     st.stop()
@@ -63,23 +63,34 @@ except Exception as exc:
 
 st.markdown("## 🏦 Account Overview")
 
+
 total_accounts = len(account_balances)
 
 total_balance = Decimal("0.00")
 
+
 for account in account_balances:
 
-    total_balance += Decimal(
-        str(
-            account.get(
-                "current_balance",
-                account.get(
-                    "balance",
-                    "0.00",
-                ),
-            )
-        )
+    raw_balance = account.get(
+        "current_balance",
+        account.get(
+            "balance",
+            "0.00",
+        ),
     )
+
+    try:
+
+        total_balance += Decimal(
+            str(raw_balance)
+        )
+
+    except (InvalidOperation, ValueError, TypeError):
+
+        # Ignore malformed display-only balance values.
+        # The underlying account service remains the
+        # authoritative source for financial calculations.
+        continue
 
 
 summary_col1, summary_col2 = st.columns(2)
@@ -110,6 +121,7 @@ st.divider()
 
 st.markdown("### 💳 Your Accounts")
 
+
 if not account_balances:
 
     st.info(
@@ -135,37 +147,59 @@ else:
             "other",
         )
 
-        current_balance = Decimal(
-            str(
-                account.get(
-                    "current_balance",
+        # -------------------------------------------------
+        # CURRENT BALANCE
+        # -------------------------------------------------
+
+        try:
+
+            current_balance = Decimal(
+                str(
                     account.get(
-                        "balance",
+                        "current_balance",
+                        account.get(
+                            "balance",
+                            "0.00",
+                        ),
+                    )
+                )
+            )
+
+        except (InvalidOperation, ValueError, TypeError):
+
+            current_balance = Decimal("0.00")
+
+
+        # -------------------------------------------------
+        # OPENING BALANCE
+        # -------------------------------------------------
+
+        try:
+
+            opening_balance = Decimal(
+                str(
+                    account.get(
+                        "opening_balance",
                         "0.00",
-                    ),
+                    )
                 )
             )
-        )
 
-        opening_balance = Decimal(
-            str(
-                account.get(
-                    "opening_balance",
-                    "0.00",
-                )
-            )
-        )
+        except (InvalidOperation, ValueError, TypeError):
+
+            opening_balance = Decimal("0.00")
 
 
-        # -------------------------------------------------
+        # =================================================
         # ACCOUNT CARD
-        # -------------------------------------------------
+        # =================================================
 
         with st.container(border=True):
 
             header_col1, header_col2 = st.columns(
                 [0.70, 0.30]
             )
+
 
             with header_col1:
 
@@ -174,9 +208,10 @@ else:
                 )
 
                 st.caption(
-                    f"Account type: "
-                    f"{account_type.replace('_', ' ').title()}"
+                    "Account type: "
+                    f"{str(account_type).replace('_', ' ').title()}"
                 )
+
 
             with header_col2:
 
@@ -214,11 +249,12 @@ else:
                 )
 
 
-            # -------------------------------------------------
+            # =================================================
             # DEACTIVATE ACCOUNT
-            # -------------------------------------------------
+            # =================================================
 
             st.divider()
+
 
             with st.expander(
                 "⚙️ Account Actions"
@@ -230,15 +266,18 @@ else:
                     "records are preserved."
                 )
 
+
                 confirm_key = (
                     f"confirm_deactivate_{account_id}"
                 )
+
 
                 confirm = st.checkbox(
                     "I understand that this account will "
                     "no longer be available for new transactions.",
                     key=confirm_key,
                 )
+
 
                 if st.button(
                     "Deactivate Account",
@@ -268,11 +307,11 @@ else:
 
                             st.rerun()
 
-                        except Exception as exc:
+                        except Exception:
 
                             st.error(
-                                "Account could not be deactivated.\n\n"
-                                f"{exc}"
+                                "Account could not be "
+                                "deactivated. Please try again."
                             )
 
 
@@ -342,11 +381,12 @@ with st.container(border=True):
         key="create_account_button",
     ):
 
-        # -------------------------------------------------
+        # =================================================
         # NAME VALIDATION
-        # -------------------------------------------------
+        # =================================================
 
         clean_name = account_name.strip()
+
 
         if not clean_name:
 
@@ -357,13 +397,23 @@ with st.container(border=True):
             st.stop()
 
 
-        # -------------------------------------------------
+        # =================================================
         # OPENING BALANCE VALIDATION
-        # -------------------------------------------------
+        # =================================================
 
         clean_balance = (
             opening_balance_text.strip()
         )
+
+
+        if not clean_balance:
+
+            st.error(
+                "Please enter an opening balance."
+            )
+
+            st.stop()
+
 
         try:
 
@@ -389,9 +439,9 @@ with st.container(border=True):
             st.stop()
 
 
-        # -------------------------------------------------
+        # =================================================
         # CREATE ACCOUNT
-        # -------------------------------------------------
+        # =================================================
 
         try:
 
@@ -409,9 +459,15 @@ with st.container(border=True):
             )
 
 
-            st.caption(
-                f"Account ID: `{new_account['id']}`"
-            )
+            if new_account:
+
+                account_id = new_account.get("id")
+
+                if account_id:
+
+                    st.caption(
+                        f"Account ID: `{account_id}`"
+                    )
 
 
             st.rerun()
@@ -419,7 +475,12 @@ with st.container(border=True):
 
         except Exception as exc:
 
+            # -------------------------------------------------
+            # Duplicate account handling
+            # -------------------------------------------------
+
             error_text = str(exc).lower()
+
 
             if (
                 "already exists" in error_text
@@ -435,8 +496,8 @@ with st.container(border=True):
             else:
 
                 st.error(
-                    "Account could not be created.\n\n"
-                    f"{exc}"
+                    "Account could not be created. "
+                    "Please check the details and try again."
                 )
 
 

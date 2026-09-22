@@ -1,5 +1,11 @@
-
 import streamlit as st
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
+
+# =========================================================
+# CACHED DATA LOADER
+# =========================================================
 
 @st.cache_data(ttl=5, show_spinner=False)
 def load_friends_money_data():
@@ -10,7 +16,10 @@ def load_friends_money_data():
         get_total_friend_money_held,
         get_total_money_lent_outstanding,
     )
-    from services.account_service import get_all_accounts
+
+    from services.account_service import (
+        get_all_accounts,
+    )
 
     return {
         "people": get_all_people(),
@@ -21,14 +30,13 @@ def load_friends_money_data():
         "lent_total": get_total_money_lent_outstanding(),
     }
 
-from datetime import date
-from decimal import Decimal, InvalidOperation
 
 from components.navigation import (
     setup_page,
     require_login,
     show_app_header,
 )
+
 
 from services.friend_money_service import (
     create_person,
@@ -68,12 +76,12 @@ show_app_header(
 )
 
 
-
 # =========================================================
 # LOAD DATA
 # =========================================================
 
 try:
+
     data = load_friends_money_data()
 
     people = data["people"]
@@ -83,12 +91,15 @@ try:
     total_held = data["held_total"]
     total_lent = data["lent_total"]
 
-except Exception as exc:
+except Exception:
+
     st.error(
-        "Unable to load friends' money data.\n\n"
-        f"{exc}"
+        "Unable to load friends' money data. "
+        "Please try again."
     )
+
     st.stop()
+
 
 # =========================================================
 # LOOKUP MAPS
@@ -98,6 +109,7 @@ people_map = {
     person["id"]: person["name"]
     for person in people
 }
+
 
 account_map = {
     account["id"]: account["name"]
@@ -109,30 +121,51 @@ account_map = {
 # HELPERS
 # =========================================================
 
-def parse_amount(value: str, field_name: str) -> Decimal:
-    """Safely convert user-entered amount to Decimal."""
+def parse_amount(
+    value: str,
+    field_name: str,
+) -> Decimal:
+    """
+    Safely convert user-entered amount to Decimal.
+    """
 
     clean_value = value.strip()
 
+
     if not clean_value:
+
         raise ValueError(
             f"Please enter the {field_name}."
         )
 
+
     try:
-        amount = Decimal(clean_value)
+
+        amount = Decimal(
+            clean_value
+        )
+
     except (InvalidOperation, ValueError):
+
         raise ValueError(
             f"Please enter a valid {field_name}."
         )
 
+
     if amount <= Decimal("0.00"):
+
         raise ValueError(
-            f"{field_name.capitalize()} must be greater than ₹0.00."
+            f"{field_name.capitalize()} "
+            "must be greater than ₹0.00."
         )
+
 
     return amount
 
+
+# =========================================================
+# PERSON SELECTION
+# =========================================================
 
 def get_person_selection(
     people_list: list[dict],
@@ -140,13 +173,20 @@ def get_person_selection(
 ):
     """
     Render person selection and return:
-    (person_id, person_mode, new_name, new_notes)
+
+    (
+        person_id,
+        person_mode,
+        new_name,
+        new_notes,
+    )
     """
 
     existing_names = [
         person["name"]
         for person in people_list
     ]
+
 
     if people_list:
 
@@ -169,6 +209,7 @@ def get_person_selection(
             "Create the person below."
         )
 
+
     if person_mode == "Select Existing Person":
 
         selected_name = st.selectbox(
@@ -177,11 +218,13 @@ def get_person_selection(
             key=f"{key_prefix}_person",
         )
 
+
         selected_id = next(
             person["id"]
             for person in people_list
             if person["name"] == selected_name
         )
+
 
         return (
             selected_id,
@@ -190,6 +233,7 @@ def get_person_selection(
             None,
         )
 
+
     new_name = st.text_input(
         "Person Name",
         placeholder="e.g. Rahul",
@@ -197,12 +241,14 @@ def get_person_selection(
         key=f"{key_prefix}_new_person_name",
     )
 
+
     new_notes = st.text_input(
         "Person Notes",
         placeholder="Optional",
         max_chars=500,
         key=f"{key_prefix}_new_person_notes",
     )
+
 
     return (
         None,
@@ -212,23 +258,37 @@ def get_person_selection(
     )
 
 
+# =========================================================
+# CREATE PERSON IF NEEDED
+# =========================================================
+
 def create_person_if_needed(
     person_id,
     person_mode,
     new_name,
     new_notes,
 ):
-    """Create a person when the form uses Create New Person."""
+    """
+    Create a person when the form uses
+    Create New Person.
+    """
 
     if person_mode != "Create New Person":
+
         return person_id
 
-    clean_name = (new_name or "").strip()
+
+    clean_name = (
+        new_name or ""
+    ).strip()
+
 
     if not clean_name:
+
         raise ValueError(
             "Please enter the person's name."
         )
+
 
     person = create_person(
         clean_name,
@@ -239,6 +299,7 @@ def create_person_if_needed(
         ),
     )
 
+
     return person["id"]
 
 
@@ -248,9 +309,12 @@ def create_person_if_needed(
 
 st.markdown("## 💰 Friends' Money Overview")
 
+
 summary1, summary2, summary3 = st.columns(3)
 
+
 with summary1:
+
     st.metric(
         "Money I Hold",
         f"₹{total_held:,.2f}",
@@ -260,7 +324,9 @@ with summary1:
         ),
     )
 
+
 with summary2:
+
     st.metric(
         "Money I Lent",
         f"₹{total_lent:,.2f}",
@@ -270,8 +336,14 @@ with summary2:
         ),
     )
 
+
 with summary3:
-    net_position = total_lent - total_held
+
+    net_position = (
+        total_lent
+        - total_held
+    )
+
 
     st.metric(
         "Net Receivable",
@@ -303,9 +375,9 @@ st.caption(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # CURRENT FRIEND MONEY
-# ---------------------------------------------------------
+# =========================================================
 
 if not friend_records:
 
@@ -319,15 +391,18 @@ else:
 
         record_id = record["id"]
 
+
         person_name = people_map.get(
             record.get("person_id"),
             "Unknown Person",
         )
 
+
         account_name = account_map.get(
             record.get("account_id"),
             "Unknown Account",
         )
+
 
         amount_received = Decimal(
             str(
@@ -338,6 +413,7 @@ else:
             )
         )
 
+
         amount_returned = Decimal(
             str(
                 record.get(
@@ -347,28 +423,33 @@ else:
             )
         )
 
+
         outstanding = (
             amount_received
             - amount_returned
         )
+
 
         received_date = record.get(
             "received_date",
             "",
         )
 
+
         expected_return_date = record.get(
             "expected_return_date"
         )
+
 
         status = record.get(
             "status",
             "holding",
         )
 
-        # -------------------------------------------------
+
+        # =================================================
         # RECORD CARD
-        # -------------------------------------------------
+        # =================================================
 
         with st.container(border=True):
 
@@ -376,15 +457,18 @@ else:
                 [0.70, 0.30]
             )
 
+
             with header1:
 
                 st.markdown(
                     f"### 👤 {person_name}"
                 )
 
+
                 st.caption(
                     f"Money held in: {account_name}"
                 )
+
 
             with header2:
 
@@ -393,25 +477,35 @@ else:
                     f"₹{outstanding:,.2f}",
                 )
 
+
             st.divider()
+
 
             detail1, detail2, detail3 = st.columns(3)
 
+
             with detail1:
+
                 st.caption("Received")
+
                 st.markdown(
                     f"**₹{amount_received:,.2f}**"
                 )
 
+
             with detail2:
+
                 st.caption("Returned")
+
                 st.markdown(
                     f"**₹{amount_returned:,.2f}**"
                 )
 
+
             with detail3:
 
                 st.caption("Status")
+
 
                 if status == "fully_returned":
 
@@ -431,32 +525,40 @@ else:
                         "**🔴 Holding**"
                     )
 
+
             st.divider()
 
+
             date1, date2 = st.columns(2)
+
 
             with date1:
 
                 st.caption("Received Date")
+
                 st.write(
                     received_date or "—"
                 )
 
+
             with date2:
 
                 st.caption("Expected Return")
+
                 st.write(
                     expected_return_date
                     or "Not specified"
                 )
 
-            # -------------------------------------------------
+
+            # =================================================
             # RETURN MONEY
-            # -------------------------------------------------
+            # =================================================
 
             if outstanding > Decimal("0.00"):
 
                 st.divider()
+
 
                 with st.expander(
                     "↩️ Return Money"
@@ -470,6 +572,7 @@ else:
                         key=f"held_return_amount_{record_id}",
                     )
 
+
                     return_date = st.date_input(
                         "Return Date",
                         value=date.today(),
@@ -477,12 +580,14 @@ else:
                         key=f"held_return_date_{record_id}",
                     )
 
+
                     return_notes = st.text_input(
                         "Return Notes",
                         placeholder="Optional",
                         max_chars=500,
                         key=f"held_return_notes_{record_id}",
                     )
+
 
                     if st.button(
                         "↩️ Record Return",
@@ -498,11 +603,14 @@ else:
                                 "return amount",
                             )
 
+
                             if return_amount > outstanding:
+
                                 raise ValueError(
                                     "Return amount cannot exceed "
                                     f"the outstanding ₹{outstanding:,.2f}."
                                 )
+
 
                             record_money_returned(
                                 friend_money_id=record_id,
@@ -515,24 +623,36 @@ else:
                                 ),
                             )
 
+
                             st.success(
                                 f"₹{return_amount:,.2f} "
                                 f"returned to {person_name}."
                             )
 
+
                             load_friends_money_data.clear()
+
                             st.rerun()
 
-                        except Exception as exc:
+
+                        except ValueError as exc:
 
                             st.error(
-                                "Return could not be recorded.\n\n"
-                                f"{exc}"
+                                str(exc)
                             )
 
-            # -------------------------------------------------
+
+                        except Exception:
+
+                            st.error(
+                                "Return could not be recorded. "
+                                "Please try again."
+                            )
+
+
+            # =================================================
             # UPDATE DETAILS
-            # -------------------------------------------------
+            # =================================================
 
             with st.expander(
                 "⚙️ Update Details"
@@ -540,14 +660,19 @@ else:
 
                 current_expected = None
 
+
                 if expected_return_date:
 
                     try:
+
                         current_expected = date.fromisoformat(
                             expected_return_date
                         )
+
                     except ValueError:
+
                         current_expected = None
+
 
                 new_expected_date = st.date_input(
                     "Expected Return Date",
@@ -555,12 +680,14 @@ else:
                     key=f"held_expected_date_{record_id}",
                 )
 
+
                 new_notes = st.text_area(
                     "Notes",
                     value=record.get("notes") or "",
                     max_chars=1000,
                     key=f"held_notes_{record_id}",
                 )
+
 
                 if st.button(
                     "💾 Save Changes",
@@ -580,18 +707,22 @@ else:
                             },
                         )
 
+
                         st.success(
                             "Details updated successfully."
                         )
 
+
                         load_friends_money_data.clear()
+
                         st.rerun()
 
-                    except Exception as exc:
+
+                    except Exception:
 
                         st.error(
-                            "Details could not be updated.\n\n"
-                            f"{exc}"
+                            "Details could not be updated. "
+                            "Please try again."
                         )
 
 
@@ -600,6 +731,7 @@ else:
 # =========================================================
 
 st.divider()
+
 
 with st.expander(
     "➕ Record Money Received From Someone",
@@ -611,12 +743,17 @@ with st.expander(
         "and you are expected to return it."
     )
 
-    selected_person_id, person_mode, new_person_name, new_person_notes = (
-        get_person_selection(
-            people,
-            "held_receive",
-        )
+
+    (
+        selected_person_id,
+        person_mode,
+        new_person_name,
+        new_person_notes,
+    ) = get_person_selection(
+        people,
+        "held_receive",
     )
+
 
     if not accounts:
 
@@ -630,11 +767,13 @@ with st.expander(
             account_map.values()
         )
 
+
         selected_account_name = st.selectbox(
             "Account Where Money Was Received",
             options=account_names,
             key="held_receive_account",
         )
+
 
         selected_account_id = next(
             account_id
@@ -643,11 +782,13 @@ with st.expander(
             if account_name == selected_account_name
         )
 
+
         received_amount_text = st.text_input(
             "Amount Received (₹)",
             placeholder="0.00",
             key="held_receive_amount",
         )
+
 
         received_date = st.date_input(
             "Received Date",
@@ -655,6 +796,7 @@ with st.expander(
             max_value=date.today(),
             key="held_receive_date",
         )
+
 
         expected_return_date = st.date_input(
             "Expected Return Date",
@@ -664,6 +806,7 @@ with st.expander(
             help="Optional.",
         )
 
+
         received_notes = st.text_area(
             "Notes",
             placeholder="Optional details...",
@@ -671,6 +814,7 @@ with st.expander(
             height=90,
             key="held_receive_notes",
         )
+
 
         if st.button(
             "👥 Record Money Received",
@@ -688,12 +832,14 @@ with st.expander(
                     new_person_notes,
                 )
 
+
                 received_amount = parse_amount(
                     received_amount_text,
                     "amount received",
                 )
 
-                new_record = record_money_received(
+
+                record_money_received(
                     person_id=selected_person_id,
                     account_id=selected_account_id,
                     amount=received_amount,
@@ -710,18 +856,30 @@ with st.expander(
                     ),
                 )
 
+
                 st.success(
                     f"₹{received_amount:,.2f} "
                     "was recorded successfully."
                 )
 
+
+                load_friends_money_data.clear()
+
                 st.rerun()
 
-            except Exception as exc:
+
+            except ValueError as exc:
 
                 st.error(
-                    "Friend money could not be recorded.\n\n"
-                    f"{exc}"
+                    str(exc)
+                )
+
+
+            except Exception:
+
+                st.error(
+                    "Friend money could not be recorded. "
+                    "Please try again."
                 )
 
 
@@ -738,11 +896,12 @@ st.caption(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LENT SUMMARY
-# ---------------------------------------------------------
+# =========================================================
 
 lent_outstanding_count = 0
+
 
 for record in lent_records:
 
@@ -755,6 +914,7 @@ for record in lent_records:
         )
     )
 
+
     amount_returned = Decimal(
         str(
             record.get(
@@ -764,11 +924,18 @@ for record in lent_records:
         )
     )
 
-    if amount_lent - amount_returned > Decimal("0.00"):
+
+    if (
+        amount_lent
+        - amount_returned
+        > Decimal("0.00")
+    ):
+
         lent_outstanding_count += 1
 
 
 lent_summary1, lent_summary2 = st.columns(2)
+
 
 with lent_summary1:
 
@@ -776,6 +943,7 @@ with lent_summary1:
         "Outstanding Lent",
         f"₹{total_lent:,.2f}",
     )
+
 
 with lent_summary2:
 
@@ -785,9 +953,9 @@ with lent_summary2:
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LENT RECORDS
-# ---------------------------------------------------------
+# =========================================================
 
 if not lent_records:
 
@@ -802,15 +970,18 @@ else:
 
         record_id = record["id"]
 
+
         person_name = people_map.get(
             record.get("person_id"),
             "Unknown Person",
         )
 
+
         account_name = account_map.get(
             record.get("account_id"),
             "Unknown Account",
         )
+
 
         amount_lent = Decimal(
             str(
@@ -821,6 +992,7 @@ else:
             )
         )
 
+
         amount_returned = Decimal(
             str(
                 record.get(
@@ -830,28 +1002,33 @@ else:
             )
         )
 
+
         outstanding = (
             amount_lent
             - amount_returned
         )
+
 
         lent_date = record.get(
             "lent_date",
             "",
         )
 
+
         expected_return_date = record.get(
             "expected_return_date"
         )
+
 
         status = record.get(
             "status",
             "lent",
         )
 
-        # -------------------------------------------------
+
+        # =================================================
         # LENT CARD
-        # -------------------------------------------------
+        # =================================================
 
         with st.container(border=True):
 
@@ -859,15 +1036,18 @@ else:
                 [0.70, 0.30]
             )
 
+
             with header1:
 
                 st.markdown(
                     f"### 👤 {person_name}"
                 )
 
+
                 st.caption(
                     f"Money lent from: {account_name}"
                 )
+
 
             with header2:
 
@@ -876,27 +1056,35 @@ else:
                     f"₹{outstanding:,.2f}",
                 )
 
+
             st.divider()
 
+
             detail1, detail2, detail3 = st.columns(3)
+
 
             with detail1:
 
                 st.caption("Lent")
+
                 st.markdown(
                     f"**₹{amount_lent:,.2f}**"
                 )
 
+
             with detail2:
 
                 st.caption("Returned")
+
                 st.markdown(
                     f"**₹{amount_returned:,.2f}**"
                 )
 
+
             with detail3:
 
                 st.caption("Status")
+
 
                 if status == "fully_returned":
 
@@ -916,32 +1104,40 @@ else:
                         "**🔴 Lent**"
                     )
 
+
             st.divider()
 
+
             date1, date2 = st.columns(2)
+
 
             with date1:
 
                 st.caption("Lent Date")
+
                 st.write(
                     lent_date or "—"
                 )
 
+
             with date2:
 
                 st.caption("Expected Return")
+
                 st.write(
                     expected_return_date
                     or "Not specified"
                 )
 
-            # -------------------------------------------------
+
+            # =================================================
             # RECEIVE MONEY BACK
-            # -------------------------------------------------
+            # =================================================
 
             if outstanding > Decimal("0.00"):
 
                 st.divider()
+
 
                 with st.expander(
                     "💰 Receive Money Back"
@@ -956,7 +1152,6 @@ else:
                     )
 
 
-
                     repayment_date = st.date_input(
                         "Return Date",
                         value=date.today(),
@@ -964,12 +1159,14 @@ else:
                         key=f"lent_return_date_{record_id}",
                     )
 
+
                     repayment_notes = st.text_input(
                         "Return Notes",
                         placeholder="Optional",
                         max_chars=500,
                         key=f"lent_return_notes_{record_id}",
                     )
+
 
                     if st.button(
                         "💰 Record Money Received Back",
@@ -985,11 +1182,14 @@ else:
                                 "repayment amount",
                             )
 
+
                             if repayment_amount > outstanding:
+
                                 raise ValueError(
                                     "Repayment amount cannot exceed "
                                     f"the outstanding ₹{outstanding:,.2f}."
                                 )
+
 
                             record_money_lent_returned(
                                 money_lent_id=record_id,
@@ -1002,30 +1202,43 @@ else:
                                 ),
                             )
 
+
                             st.success(
                                 f"₹{repayment_amount:,.2f} "
                                 f"received back from {person_name}."
                             )
 
+
                             load_friends_money_data.clear()
+
                             st.rerun()
 
-                        except Exception as exc:
+
+                        except ValueError as exc:
 
                             st.error(
-                                "Money received back could not be recorded.\n\n"
-                                f"{exc}"
+                                str(exc)
                             )
 
-            # -------------------------------------------------
+
+                        except Exception:
+
+                            st.error(
+                                "Money received back could not "
+                                "be recorded. Please try again."
+                            )
+
+
+            # =================================================
             # UPDATE LENT DETAILS
-            # -------------------------------------------------
+            # =================================================
 
             with st.expander(
                 "⚙️ Update Lent Details"
             ):
 
                 current_expected = None
+
 
                 if expected_return_date:
 
@@ -1039,11 +1252,13 @@ else:
 
                         current_expected = None
 
+
                 new_expected_date = st.date_input(
                     "Expected Return Date",
                     value=current_expected,
                     key=f"lent_expected_date_{record_id}",
                 )
+
 
                 new_notes = st.text_area(
                     "Notes",
@@ -1051,6 +1266,7 @@ else:
                     max_chars=1000,
                     key=f"lent_notes_{record_id}",
                 )
+
 
                 if st.button(
                     "💾 Save Changes",
@@ -1070,18 +1286,22 @@ else:
                             },
                         )
 
+
                         st.success(
                             "Lent-money details updated successfully."
                         )
 
+
                         load_friends_money_data.clear()
+
                         st.rerun()
 
-                    except Exception as exc:
+
+                    except Exception:
 
                         st.error(
-                            "Details could not be updated.\n\n"
-                            f"{exc}"
+                            "Details could not be updated. "
+                            "Please try again."
                         )
 
 
@@ -1090,6 +1310,7 @@ else:
 # =========================================================
 
 st.divider()
+
 
 with st.expander(
     "💸 Lend Money to Someone",
@@ -1101,12 +1322,17 @@ with st.expander(
         "and expect them to return it."
     )
 
-    selected_person_id, person_mode, new_person_name, new_person_notes = (
-        get_person_selection(
-            people,
-            "lend_money",
-        )
+
+    (
+        selected_person_id,
+        person_mode,
+        new_person_name,
+        new_person_notes,
+    ) = get_person_selection(
+        people,
+        "lend_money",
     )
+
 
     if not accounts:
 
@@ -1122,6 +1348,7 @@ with st.expander(
             key="lend_account",
         )
 
+
         selected_account_id = next(
             account_id
             for account_id, account_name
@@ -1129,11 +1356,13 @@ with st.expander(
             if account_name == selected_account_name
         )
 
+
         lent_amount_text = st.text_input(
             "Amount Lent (₹)",
             placeholder="0.00",
             key="lend_amount",
         )
+
 
         lent_date = st.date_input(
             "Lent Date",
@@ -1141,6 +1370,7 @@ with st.expander(
             max_value=date.today(),
             key="lend_date",
         )
+
 
         expected_return_date = st.date_input(
             "Expected Return Date",
@@ -1150,6 +1380,7 @@ with st.expander(
             help="Optional.",
         )
 
+
         lent_notes = st.text_area(
             "Notes",
             placeholder="Optional details...",
@@ -1157,6 +1388,7 @@ with st.expander(
             height=90,
             key="lend_notes",
         )
+
 
         if st.button(
             "💸 Record Money Lent",
@@ -1174,10 +1406,12 @@ with st.expander(
                     new_person_notes,
                 )
 
+
                 lent_amount = parse_amount(
                     lent_amount_text,
                     "amount lent",
                 )
+
 
                 record_money_lent(
                     person_id=selected_person_id,
@@ -1196,23 +1430,36 @@ with st.expander(
                     ),
                 )
 
+
                 person_name = people_map.get(
                     selected_person_id,
                     "the person",
                 )
+
 
                 st.success(
                     f"₹{lent_amount:,.2f} lent to "
                     f"{person_name} successfully."
                 )
 
+
+                load_friends_money_data.clear()
+
                 st.rerun()
 
-            except Exception as exc:
+
+            except ValueError as exc:
 
                 st.error(
-                    "Money could not be lent.\n\n"
-                    f"{exc}"
+                    str(exc)
+                )
+
+
+            except Exception:
+
+                st.error(
+                    "Money could not be lent. "
+                    "Please try again."
                 )
 
 
@@ -1224,7 +1471,9 @@ st.divider()
 
 st.markdown("### 🔐 Financial Treatment")
 
+
 note1, note2 = st.columns(2)
+
 
 with note1:
 
@@ -1234,6 +1483,7 @@ with note1:
         "It increases your bank balance but is not personal income."
     )
 
+
 with note2:
 
     st.info(
@@ -1241,6 +1491,7 @@ with note2:
         "Your money has temporarily left your account. "
         "It reduces your bank balance but is not an expense."
     )
+
 
 st.caption(
     "🛡️ All returns are recorded as separate financial transactions "

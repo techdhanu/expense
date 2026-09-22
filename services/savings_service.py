@@ -1,9 +1,9 @@
 from datetime import date
 from decimal import Decimal
 
+from database.client import get_supabase_client
 from database.queries import get_table
 from services.authentication_service import get_current_user_id
-from services.transaction_service import create_transaction
 from utils.validators import validate_amount
 
 
@@ -14,6 +14,24 @@ from utils.validators import validate_amount
 def _decimal(value) -> Decimal:
     """Convert a value safely to Decimal."""
     return Decimal(str(value or "0.00"))
+
+
+def _rpc_result(response) -> dict:
+    """
+    Normalize a Supabase RPC response into a single dictionary.
+    """
+    data = getattr(response, "data", None)
+
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(data, list) and data:
+        if isinstance(data[0], dict):
+            return data[0]
+
+    raise RuntimeError(
+        "The database operation did not return a valid result."
+    )
 
 
 def _get_owned_goal(
@@ -295,10 +313,19 @@ def contribute_to_savings_goal(
     notes: str | None = None,
 ) -> dict:
     """
-    Add money to a savings goal.
+    Add money to a savings goal atomically.
 
-    The contribution is recorded as a transaction so the
-    source account balance decreases accordingly.
+    The PostgreSQL RPC performs all financial operations
+    inside one database transaction:
+
+    1. Validate the savings goal.
+    2. Validate the source account.
+    3. Create the savings contribution transaction.
+    4. Create the savings_contributions record.
+    5. Recalculate the goal's total contribution.
+    6. Mark the goal completed if the target is reached.
+
+    This prevents partial financial records.
     """
 
     user_id = get_current_user_id()
@@ -310,7 +337,9 @@ def contribute_to_savings_goal(
     # --------------------------------------------------------
     # Verify goal belongs to current user
     # --------------------------------------------------------
-    goal = _get_owned_goal(goal_id)
+    goal = _get_owned_goal(
+        goal_id
+    )
 
     if goal["status"] != "active":
         raise ValueError(
@@ -325,78 +354,54 @@ def contribute_to_savings_goal(
     )
 
     # --------------------------------------------------------
-    # Create transaction
+    # Preserve the existing notes behavior.
+    # --------------------------------------------------------
+    if notes:
+        notes = notes.strip()
+
+    # --------------------------------------------------------
+    # ATOMIC DATABASE OPERATION
     #
-    # transaction_service also validates ownership.
+    # The RPC creates both the transaction and the
+    # savings_contributions row in ONE PostgreSQL transaction.
     # --------------------------------------------------------
-    transaction = create_transaction(
-        transaction_date=contribution_date,
-        transaction_type="savings_goal_contribution",
-        amount=amount,
-        source_account_id=account_id,
-        description=f"Savings contribution: {goal['name']}",
-        notes=notes,
+    response = get_supabase_client().rpc(
+        "record_savings_contribution_atomic",
+        {
+            "p_goal_id": goal_id,
+            "p_account_id": account_id,
+            "p_amount": str(amount),
+            "p_contribution_date": (
+                contribution_date.isoformat()
+            ),
+            "p_notes": notes,
+            "p_user_id": user_id,
+        },
+    ).execute()
+
+    contribution = _rpc_result(
+        response
     )
 
     # --------------------------------------------------------
-    # Create contribution record
+    # Defensive response validation
     # --------------------------------------------------------
-    response = (
-        get_table("savings_contributions")
-        .insert(
-            {
-                "user_id": user_id,
-                "savings_goal_id": goal_id,
-                "transaction_id": transaction["id"],
-                "account_id": account_id,
-                "amount": str(amount),
-                "contribution_date": (
-                    contribution_date.isoformat()
-                ),
-                "notes": (
-                    notes.strip()
-                    if notes
-                    else None
-                ),
-            }
-        )
-        .execute()
-    )
-
-    if not response.data:
+    if contribution.get("user_id") != user_id:
         raise RuntimeError(
-            "Savings contribution could not be created."
+            "Savings contribution response failed user validation."
         )
 
-    # --------------------------------------------------------
-    # Automatically mark the goal completed when target
-    # is reached.
-    # --------------------------------------------------------
-    status = get_goal_status(
-        goal_id
-    )
-
-    if status["remaining"] <= Decimal("0.00"):
-
-        (
-            get_table("savings_goals")
-            .update(
-                {
-                    "status": "completed"
-                }
-            )
-            .eq(
-                "id",
-                goal_id,
-            )
-            .eq(
-                "user_id",
-                user_id,
-            )
-            .execute()
+    if contribution.get("savings_goal_id") != goal_id:
+        raise RuntimeError(
+            "Savings contribution response failed goal validation."
         )
 
-    return response.data[0]
+    if contribution.get("account_id") != account_id:
+        raise RuntimeError(
+            "Savings contribution response failed account validation."
+        )
+
+    return contribution
 
 
 # ============================================================
@@ -440,7 +445,9 @@ def update_savings_goal(
     if unexpected_fields:
         raise ValueError(
             "Unsupported savings goal field(s): "
-            + ", ".join(sorted(unexpected_fields))
+            + ", ".join(
+                sorted(unexpected_fields)
+            )
         )
 
     clean_updates = {}
