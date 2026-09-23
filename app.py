@@ -57,27 +57,96 @@ st.markdown(
     """
     <style>
 
+    /* ---------------------------------------------------
+       Shared theme (fonts, background, buttons, tabs,
+       inputs, alerts) already comes from setup_page().
+       Only the classes unique to this login layout live
+       here.
+    --------------------------------------------------- */
+
+    .block-container {
+        padding-top: 2.5rem;
+        padding-bottom: 3rem;
+        max-width: 560px;
+    }
+
     .login-container {
         max-width: 480px;
         margin: 0 auto;
         padding-top: 30px;
+        animation: fadeInUp 0.6s ease;
+    }
+
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(18px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
     }
 
     .login-title {
         text-align: center;
-        font-size: 2.2rem;
-        font-weight: 700;
+        font-size: 2.4rem;
+        font-weight: 800;
         margin-bottom: 5px;
+        background: linear-gradient(90deg, #ffffff 0%, #a5b4fc 60%, #818cf8 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -0.02em;
     }
 
     .login-subtitle {
         text-align: center;
         color: #9ca3af;
         margin-bottom: 30px;
+        font-size: 1rem;
+        font-weight: 400;
     }
 
     .login-card {
-        padding: 10px 5px;
+        padding: 28px 26px 18px 26px;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+    }
+
+    .stCaption, [data-testid="stCaptionContainer"] {
+        text-align: center;
+    }
+
+    /* ---------------------------------------------------
+       RESPONSIVE / MOBILE FRIENDLY
+    --------------------------------------------------- */
+
+    @media (max-width: 480px) {
+
+        .block-container {
+            padding-left: 1rem;
+            padding-right: 1rem;
+            padding-top: 1.2rem;
+        }
+
+        .login-title {
+            font-size: 1.9rem;
+        }
+
+        .login-subtitle {
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+
+        .login-card {
+            padding: 20px 14px 12px 14px;
+            border-radius: 16px;
+        }
     }
 
     </style>
@@ -109,6 +178,16 @@ st.markdown(
     '<div class="login-subtitle">'
     "Manage your money simply and securely."
     "</div>",
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# LOGIN CARD (VISUAL WRAPPER ONLY)
+# =========================================================
+
+st.markdown(
+    '<div class="login-card">',
     unsafe_allow_html=True,
 )
 
@@ -373,6 +452,16 @@ with create_tab:
                         "Could not create account. "
                         "Please try again."
                     )
+
+
+# =========================================================
+# CLOSE LOGIN CARD
+# =========================================================
+
+st.markdown(
+    "</div>",
+    unsafe_allow_html=True,
+)
 
 
 # =========================================================

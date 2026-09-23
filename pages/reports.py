@@ -5,6 +5,7 @@ from collections import defaultdict
 
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 
 from components.navigation import (
     setup_page,
@@ -46,6 +47,15 @@ show_app_header(
     "Reports & Analytics",
     "Understand where your money comes from and where it goes.",
 )
+
+
+# =========================================================
+# REPORTS PAGE STYLING
+# =========================================================
+
+# Give every Plotly chart a dark theme that matches the app,
+# without touching any of the chart-building code below.
+pio.templates.default = "plotly_dark"
 
 
 # =========================================================
