@@ -27,6 +27,12 @@ def authenticated_test_user(monkeypatch):
     This intentionally does not depend on Streamlit's
     session state because pytest runs outside Streamlit's
     normal ScriptRunContext.
+
+    The fixture also ensures that the test user has the
+    required default accounts before every test.
+
+    This keeps tests independent from database state left
+    behind by earlier tests.
     """
 
     # -----------------------------------------------------
@@ -117,6 +123,18 @@ def authenticated_test_user(monkeypatch):
         "get_current_user_id",
         lambda: user_id,
     )
+
+    # -----------------------------------------------------
+    # ENSURE DEFAULT TEST ACCOUNTS
+    #
+    # This must happen AFTER monkeypatching because
+    # ensure_default_accounts() uses get_current_user_id().
+    #
+    # It also protects tests from state changes made by
+    # previous tests in the same suite.
+    # -----------------------------------------------------
+
+    account_service.ensure_default_accounts()
 
     # -----------------------------------------------------
     # Make the test user available to individual tests

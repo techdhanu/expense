@@ -264,14 +264,35 @@ def ensure_default_accounts() -> list[dict]:
     Ensure the required default accounts exist
     for the currently authenticated user.
 
-    Existing user accounts are preserved.
+    Existing accounts are preserved, including inactive
+    accounts. This is important because account names are
+    unique per user and inactive accounts are retained for
+    historical records.
 
-    Missing default accounts are created with
-    ₹0 opening balance.
+    Missing default accounts are created with ₹0 opening
+    balance.
     """
 
-    # get_all_accounts() is already user-scoped.
-    existing_accounts = get_all_accounts()
+    user_id = get_current_user_id()
+
+    # -----------------------------------------------------
+    # LOAD ALL EXISTING ACCOUNTS
+    #
+    # Do NOT use get_all_accounts() here because that function
+    # intentionally returns active accounts only.
+    #
+    # An inactive account still exists in the database and
+    # must therefore count as an existing account.
+    # -----------------------------------------------------
+
+    response = (
+        get_table("accounts")
+        .select("id, name, is_active")
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    existing_accounts = response.data or []
 
     existing_names = {
         account["name"]
@@ -279,20 +300,27 @@ def ensure_default_accounts() -> list[dict]:
         if account.get("name")
     }
 
+    # -----------------------------------------------------
+    # CREATE ONLY MISSING DEFAULT ACCOUNTS
+    # -----------------------------------------------------
+
     for default_account in DEFAULT_ACCOUNTS:
 
-        if default_account["name"] not in existing_names:
+        account_name = default_account["name"]
 
-            create_account(
-                name=default_account["name"],
-                account_type=default_account[
-                    "account_type"
-                ],
-                opening_balance=ZERO,
-            )
+        if account_name in existing_names:
+            continue
 
+        create_account(
+            name=account_name,
+            account_type=default_account[
+                "account_type"
+            ],
+            opening_balance=ZERO,
+        )
+
+    # Return active accounts for normal application use.
     return get_all_accounts()
-
 
 # =========================================================
 # GET TOTAL OPENING BALANCE
