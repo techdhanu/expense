@@ -248,10 +248,10 @@ with login_tab:
                         "Invalid username or password."
                     )
 
-            except Exception as exc:
+            except Exception:
 
                 st.error(
-                    f"Login failed. Please try again.\n\n{exc}"
+                    "Login failed. Please try again."
                 )
 
 
@@ -374,7 +374,8 @@ with create_tab:
                 else:
 
                     st.error(
-                        f"Could not create account.\n\n{exc}"
+                        "Account could not be created. "
+                        "Please try again."
                     )
 
 

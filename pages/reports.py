@@ -204,14 +204,16 @@ st.caption(
 
 try:
 
-    transactions = get_filtered_transactions(
-        start_date=start_date,
-        end_date=end_date,
-        transaction_types=None,
-        account_ids=None,
-        category_ids=None,
-        person_ids=None,
-    )
+    with st.spinner("Crunching your numbers..."):
+
+        transactions = get_filtered_transactions(
+            start_date=start_date,
+            end_date=end_date,
+            transaction_types=None,
+            account_ids=None,
+            category_ids=None,
+            person_ids=None,
+        )
 
 except Exception:
 

@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import date as date_type
 from decimal import Decimal
 
 from components.navigation import (
@@ -92,13 +93,15 @@ if clear_filters_button("clear_history_filters"):
 # LOAD FILTERED TRANSACTIONS
 # =========================================================
 
-transactions = get_filtered_transactions(
-    start_date=filters["start_date"],
-    end_date=filters["end_date"],
-    transaction_types=filters["transaction_types"] or None,
-    account_ids=filters["account_ids"] or None,
-    category_ids=filters["category_ids"] or None,
-)
+with st.spinner("Loading transactions..."):
+
+    transactions = get_filtered_transactions(
+        start_date=filters["start_date"],
+        end_date=filters["end_date"],
+        transaction_types=filters["transaction_types"] or None,
+        account_ids=filters["account_ids"] or None,
+        category_ids=filters["category_ids"] or None,
+    )
 
 
 # =========================================================
@@ -220,6 +223,37 @@ if "Amount" in display_df.columns:
     ].apply(
         lambda value: f"₹{Decimal(str(value)):,.2f}"
     )
+
+for _column_name in ("Debit", "Credit"):
+
+    if _column_name in display_df.columns:
+
+        display_df[_column_name] = display_df[
+            _column_name
+        ].apply(
+            lambda value: (
+                f"₹{Decimal(str(value)):,.2f}"
+                if value is not None
+                else ""
+            )
+        )
+
+if "Date" in display_df.columns:
+
+    def _format_display_date(value):
+        """Format a stored date as a human-friendly date for display only."""
+        if not value:
+            return value
+        try:
+            return date_type.fromisoformat(
+                str(value)[:10]
+            ).strftime("%d %b %Y")
+        except (ValueError, TypeError):
+            return value
+
+    display_df["Date"] = display_df[
+        "Date"
+    ].apply(_format_display_date)
 
 
 st.dataframe(

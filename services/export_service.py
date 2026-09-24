@@ -19,6 +19,32 @@ TRANSACTION_TYPE_LABELS = {
 
 
 # ---------------------------------------------------------
+# CREDIT / DEBIT CLASSIFICATION
+#
+# Mirrors the same balance-effect rules used by
+# services.account_service.get_account_balance(), so the
+# Credit/Debit split always agrees with actual balances.
+# ---------------------------------------------------------
+CREDIT_TRANSACTION_TYPES = {
+    "income",
+    "friend_money_received",
+    "friend_money_lent_returned",
+    "balance_adjustment",
+}
+
+DEBIT_TRANSACTION_TYPES = {
+    "expense",
+    "friend_money_returned",
+    "friend_money_lent",
+    "savings_goal_contribution",
+    # An internal transfer is shown as a debit from its
+    # source account, which is the account this row is
+    # displayed against.
+    "internal_transfer",
+}
+
+
+# ---------------------------------------------------------
 # DECIMAL HELPER
 # ---------------------------------------------------------
 def _to_decimal(value) -> Decimal:
@@ -119,6 +145,23 @@ def build_transaction_dataframe(
         )
 
         # ---------------------------------------------
+        # DEBIT / CREDIT
+        #
+        # Exactly one of the two is populated per row.
+        # ---------------------------------------------
+        if transaction_type in CREDIT_TRANSACTION_TYPES:
+            credit_amount = amount
+            debit_amount = None
+
+        elif transaction_type in DEBIT_TRANSACTION_TYPES:
+            credit_amount = None
+            debit_amount = amount
+
+        else:
+            credit_amount = None
+            debit_amount = None
+
+        # ---------------------------------------------
         # DATE
         # ---------------------------------------------
         transaction_date = transaction.get(
@@ -139,6 +182,8 @@ def build_transaction_dataframe(
                 "Category": category_display,
                 "Person": person_display,
                 "Amount": amount,
+                "Debit": debit_amount,
+                "Credit": credit_amount,
                 "Description": (
                     transaction.get("description")
                     or "—"
@@ -155,6 +200,8 @@ def build_transaction_dataframe(
             "Category",
             "Person",
             "Amount",
+            "Debit",
+            "Credit",
             "Description",
         ],
     )
@@ -178,6 +225,18 @@ def export_transactions_csv(
         ].apply(
             lambda value: f"{_to_decimal(value):.2f}"
         )
+
+    for column_name in ("Debit", "Credit"):
+        if column_name in export_df.columns:
+            export_df[column_name] = export_df[
+                column_name
+            ].apply(
+                lambda value: (
+                    f"{_to_decimal(value):.2f}"
+                    if value is not None
+                    else ""
+                )
+            )
 
     return export_df.to_csv(
         index=False
@@ -208,6 +267,18 @@ def export_transactions_excel(
                 _to_decimal(value)
             )
         )
+
+    for column_name in ("Debit", "Credit"):
+        if column_name in export_df.columns:
+            export_df[column_name] = export_df[
+                column_name
+            ].apply(
+                lambda value: (
+                    float(_to_decimal(value))
+                    if value is not None
+                    else None
+                )
+            )
 
     with pd.ExcelWriter(
         output,
@@ -250,22 +321,21 @@ def export_transactions_excel(
             )
 
         # INR-style number format
-        amount_column = None
+        numeric_columns = {}
 
         for cell in worksheet[1]:
 
-            if cell.value == "Amount":
-                amount_column = cell.column_letter
-                break
+            if cell.value in ("Amount", "Debit", "Credit"):
+                numeric_columns[cell.value] = cell.column_letter
 
-        if amount_column:
+        for column_letter in numeric_columns.values():
 
             for row in range(
                 2,
                 worksheet.max_row + 1,
             ):
                 worksheet[
-                    f"{amount_column}{row}"
+                    f"{column_letter}{row}"
                 ].number_format = '#,##0.00'
 
     return output.getvalue()
@@ -357,6 +427,18 @@ def export_transactions_pdf(
                 f"₹{_to_decimal(value):,.2f}"
             )
         )
+
+    for column_name in ("Debit", "Credit"):
+        if column_name in export_df.columns:
+            export_df[column_name] = export_df[
+                column_name
+            ].apply(
+                lambda value: (
+                    f"₹{_to_decimal(value):,.2f}"
+                    if value is not None
+                    else "—"
+                )
+            )
 
     table_data = [
         list(export_df.columns)

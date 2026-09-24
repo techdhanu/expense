@@ -95,6 +95,21 @@ def _inject_global_styles() -> None:
             display: inline-block;
         }
 
+        .sidebar-tagline {
+            color: #9ca3af;
+            font-size: 0.82rem;
+            margin: -6px 0 4px 2px;
+        }
+
+        .sidebar-section-label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: #6b7280;
+            text-transform: uppercase;
+            margin: 4px 0 6px 2px;
+        }
+
         /* Sidebar navigation links */
         section[data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"],
         section[data-testid="stSidebar"] [data-testid="stPageLink"] {
@@ -426,6 +441,33 @@ def _inject_global_styles() -> None:
         }
 
         /* -----------------------------------------------
+           ACCESSIBILITY: KEYBOARD FOCUS
+        ----------------------------------------------- */
+
+        button:focus-visible,
+        a:focus-visible,
+        input:focus-visible,
+        textarea:focus-visible,
+        [role="radio"]:focus-visible,
+        [role="tab"]:focus-visible,
+        div[data-baseweb="select"]:focus-within {
+            outline: 2px solid #818cf8 !important;
+            outline-offset: 2px;
+        }
+
+        /* -----------------------------------------------
+           DISABLED CONTROLS
+        ----------------------------------------------- */
+
+        div[data-testid="stButton"] button:disabled,
+        div[data-testid="stDownloadButton"] button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        /* -----------------------------------------------
            RESPONSIVE / TABLET BREAKPOINT
         ----------------------------------------------- */
 
@@ -631,6 +673,11 @@ def show_sidebar() -> None:
             "## 💰 Expense Tracker"
         )
 
+        st.markdown(
+            '<div class="sidebar-tagline">Personal Finance</div>',
+            unsafe_allow_html=True,
+        )
+
         username = st.session_state.get(
             "username"
         )
@@ -644,13 +691,27 @@ def show_sidebar() -> None:
         st.divider()
 
         # -------------------------------------------------
-        # MAIN
+        # OVERVIEW
         # -------------------------------------------------
+
+        st.markdown(
+            '<div class="sidebar-section-label">Overview</div>',
+            unsafe_allow_html=True,
+        )
 
         st.page_link(
             "pages/Dashboard.py",
             label="Dashboard",
             icon="🏠",
+        )
+
+        # -------------------------------------------------
+        # MONEY
+        # -------------------------------------------------
+
+        st.markdown(
+            '<div class="sidebar-section-label">Money</div>',
+            unsafe_allow_html=True,
         )
 
         st.page_link(
@@ -683,6 +744,11 @@ def show_sidebar() -> None:
 
         st.divider()
 
+        st.markdown(
+            '<div class="sidebar-section-label">Planning</div>',
+            unsafe_allow_html=True,
+        )
+
         st.page_link(
             "pages/budgets.py",
             label="Budgets",
@@ -701,6 +767,17 @@ def show_sidebar() -> None:
             icon="🔄",
         )
 
+        # -------------------------------------------------
+        # ANALYTICS
+        # -------------------------------------------------
+
+        st.divider()
+
+        st.markdown(
+            '<div class="sidebar-section-label">Analytics</div>',
+            unsafe_allow_html=True,
+        )
+
         st.page_link(
             "pages/reports.py",
             label="Reports",
@@ -712,6 +789,11 @@ def show_sidebar() -> None:
         # -------------------------------------------------
 
         st.divider()
+
+        st.markdown(
+            '<div class="sidebar-section-label">System</div>',
+            unsafe_allow_html=True,
+        )
 
         st.page_link(
             "pages/backup_restore.py",

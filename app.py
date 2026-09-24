@@ -281,7 +281,7 @@ with login_tab:
                         ensure_default_accounts()
                         ensure_default_categories()
 
-                    except Exception as setup_exc:
+                    except Exception:
 
                         # Do not allow the user into the application
                         # if their initial workspace could not be created.
@@ -293,11 +293,7 @@ with login_tab:
                         st.error(
                             "Your account was authenticated, but "
                             "your financial workspace could not be "
-                            "initialized."
-                        )
-
-                        st.caption(
-                            f"Setup error: {setup_exc}"
+                            "initialized. Please try again."
                         )
 
                         st.stop()

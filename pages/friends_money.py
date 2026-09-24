@@ -163,6 +163,27 @@ def parse_amount(
     return amount
 
 
+def format_display_date(value) -> str:
+    """
+    Format a stored date value as a human-friendly date
+    (e.g. 23 Sep 2026) for display purposes only.
+    """
+
+    if not value:
+
+        return None
+
+    try:
+
+        return date.fromisoformat(
+            str(value)[:10]
+        ).strftime("%d %b %Y")
+
+    except (ValueError, TypeError):
+
+        return str(value)
+
+
 # =========================================================
 # PERSON SELECTION
 # =========================================================
@@ -537,7 +558,8 @@ else:
                 st.caption("Received Date")
 
                 st.write(
-                    received_date or "—"
+                    format_display_date(received_date)
+                    or "—"
                 )
 
 
@@ -546,7 +568,7 @@ else:
                 st.caption("Expected Return")
 
                 st.write(
-                    expected_return_date
+                    format_display_date(expected_return_date)
                     or "Not specified"
                 )
 
@@ -1116,7 +1138,8 @@ else:
                 st.caption("Lent Date")
 
                 st.write(
-                    lent_date or "—"
+                    format_display_date(lent_date)
+                    or "—"
                 )
 
 
@@ -1125,7 +1148,7 @@ else:
                 st.caption("Expected Return")
 
                 st.write(
-                    expected_return_date
+                    format_display_date(expected_return_date)
                     or "Not specified"
                 )
 
